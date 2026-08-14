@@ -292,7 +292,7 @@
     </aside>
   </div>
   <footer class="foot">
-    2 AI hunters vs 2 AI hiders · learned knowledge (Q-values) persists in this browser between rounds via localStorage · toggle <b>Debug overlay</b> for FOV cones, line-of-sight rays and live reasoning.
+    2 AI hunters vs 2 AI hiders · even walking is learned from scratch, not pathfound · all learned knowledge (Q-values) persists in this browser between rounds via localStorage · toggle <b>Debug overlay</b> for FOV cones, wall sensors, line-of-sight rays and live reasoning.
   </footer>
 </div>
 
@@ -315,7 +315,13 @@ const CONFIG = {
     speed: 88, perceptionRadius: 260, dangerRadius: 150,
     fleeCooldown: 2.5, predictHorizon: 1.1,
   },
-  round: { hideDuration: 4, seekDuration: 120, endBanner: 2.6 },
+  round: { hideDuration: 9, seekDuration: 130, endBanner: 2.6 },
+  move: {
+    decisionInterval: 0.15, sensorDist: 30,
+    alpha: 0.2, gamma: 0.9, epsilonStart: 0.9, epsilonMin: 0.08,
+    progressScale: 1.0, stepPenalty: 0.05, bumpPenalty: 1.0, arrivalBonus: 5,
+    arriveDist: 14, stuckWindow: 8, stuckThreshold: 0.15, stuckBoostEps: 0.6, stuckBoostDecisions: 6,
+  },
   rewards: {
     hiderSurvive: 10, hiderBreakLOS: 3, hiderReachSafe: 2, hiderAvoidNear: 1, hiderCaught: -10,
     hunterFind: 10, hunterInvestigateHit: 3, hunterDiscoverArea: 2, hunterWaste: -1,
@@ -351,6 +357,7 @@ function feedIcon(kind) { return { catch: '🎯', reward: '⚙️', round: '🚩
 const TILE = 40, COLS = 32, ROWS = 20;
 const ZONE_COLS = 4, ZONE_ROWS = 4;
 const ALL_ZONES = Array.from({ length: ZONE_COLS * ZONE_ROWS }, (_, i) => i);
+const DIRS8 = Array.from({ length: 8 }, (_, i) => (i * Math.PI * 2) / 8);
 
 function makeGrid() {
   const g = [];
@@ -453,52 +460,113 @@ function isSolidTile(map, x, y) {
   return map.grid[y][x] === '#';
 }
 
-function astar(map, start, goal) {
-  const key = (x, y) => y * map.cols + x;
-  const open = new Map();
-  const gScore = new Map();
-  const fScore = new Map();
-  const cameFrom = new Map();
-  function heuristic(a, b) {
-    const dx = Math.abs(a.x - b.x), dy = Math.abs(a.y - b.y);
-    return Math.max(dx, dy) + (Math.SQRT2 - 1) * Math.min(dx, dy);
+// ---- Movement is learned, not pathfound: entities sense local walls (8-bit ring)
+// and a coarse goal-direction bucket, and learn (via Q-learning) which of 8 headings
+// to move in. The geodesic distance field below only shapes the REWARD signal
+// ("did that step actually help") -- it is never exposed to the agent's decision.
+function circleHitsSolid(map, cx, cy, r) {
+  const minTX = Math.floor((cx - r) / TILE), maxTX = Math.floor((cx + r) / TILE);
+  const minTY = Math.floor((cy - r) / TILE), maxTY = Math.floor((cy + r) / TILE);
+  for (let ty = minTY; ty <= maxTY; ty++) {
+    for (let tx = minTX; tx <= maxTX; tx++) {
+      if (!map.isSolid(tx, ty)) continue;
+      const rx0 = tx * TILE, ry0 = ty * TILE, rx1 = rx0 + TILE, ry1 = ry0 + TILE;
+      const closestX = clamp(cx, rx0, rx1), closestY = clamp(cy, ry0, ry1);
+      const dx = cx - closestX, dy = cy - closestY;
+      if (dx * dx + dy * dy < r * r) return true;
+    }
   }
-  const startK = key(start.x, start.y);
-  gScore.set(startK, 0);
-  fScore.set(startK, heuristic(start, goal));
-  open.set(startK, start);
+  return false;
+}
+function moveWithCollision(map, entity, dx, dy) {
+  const r = entity.radius;
+  let moved = 0;
+  const nx = entity.x + dx;
+  if (!circleHitsSolid(map, nx, entity.y, r)) { entity.x = nx; moved += Math.abs(dx); }
+  const ny = entity.y + dy;
+  if (!circleHitsSolid(map, entity.x, ny, r)) { entity.y = ny; moved += Math.abs(dy); }
+  return moved;
+}
 
-  let iterations = 0;
-  while (open.size > 0) {
-    if (++iterations > 5000) return null;
-    let currentK = null, currentF = Infinity, current = null;
-    for (const [k, node] of open) {
-      const f = fScore.get(k) ?? Infinity;
-      if (f < currentF) { currentF = f; currentK = k; current = node; }
-    }
-    if (current.x === goal.x && current.y === goal.y) {
-      const path = [current];
-      let ck = currentK;
-      while (cameFrom.has(ck)) { const prev = cameFrom.get(ck); path.push(prev.node); ck = prev.k; }
-      return path.reverse();
-    }
-    open.delete(currentK);
-    const dirs = [[1, 0, 1], [-1, 0, 1], [0, 1, 1], [0, -1, 1], [1, 1, Math.SQRT2], [1, -1, Math.SQRT2], [-1, 1, Math.SQRT2], [-1, -1, Math.SQRT2]];
+function computeDistanceField(map, goalTile) {
+  const cols = map.cols, rows = map.rows, n = cols * rows;
+  const dist = new Float64Array(n).fill(Infinity);
+  const visited = new Uint8Array(n);
+  const key = (x, y) => y * cols + x;
+  dist[key(clampInt(goalTile.x, 0, cols - 1), clampInt(goalTile.y, 0, rows - 1))] = 0;
+  const dirs = [[1, 0, 1], [-1, 0, 1], [0, 1, 1], [0, -1, 1], [1, 1, Math.SQRT2], [1, -1, Math.SQRT2], [-1, 1, Math.SQRT2], [-1, -1, Math.SQRT2]];
+  for (let iter = 0; iter < n; iter++) {
+    let bestK = -1, bestD = Infinity;
+    for (let k = 0; k < n; k++) if (!visited[k] && dist[k] < bestD) { bestD = dist[k]; bestK = k; }
+    if (bestK === -1) break;
+    visited[bestK] = 1;
+    const cx = bestK % cols, cy = Math.floor(bestK / cols);
     for (const [dx, dy, cost] of dirs) {
-      const nx = current.x + dx, ny = current.y + dy;
+      const nx = cx + dx, ny = cy + dy;
       if (map.isSolid(nx, ny)) continue;
-      if (dx !== 0 && dy !== 0 && (map.isSolid(current.x + dx, current.y) || map.isSolid(current.x, current.y + dy))) continue;
+      if (dx !== 0 && dy !== 0 && (map.isSolid(cx + dx, cy) || map.isSolid(cx, cy + dy))) continue;
       const nk = key(nx, ny);
-      const tentativeG = gScore.get(currentK) + cost;
-      if (tentativeG < (gScore.get(nk) ?? Infinity)) {
-        cameFrom.set(nk, { node: current, k: currentK });
-        gScore.set(nk, tentativeG);
-        fScore.set(nk, tentativeG + heuristic({ x: nx, y: ny }, goal));
-        if (!open.has(nk)) open.set(nk, { x: nx, y: ny });
+      if (dist[bestK] + cost < dist[nk]) dist[nk] = dist[bestK] + cost;
+    }
+  }
+  // Extrapolate into solid tiles (nearest reachable neighbor + 1) so bilinear
+  // interpolation near a wall face stays smooth instead of hitting Infinity.
+  for (let pass = 0; pass < 2; pass++) {
+    for (let y = 0; y < rows; y++) {
+      for (let x = 0; x < cols; x++) {
+        if (!map.isSolid(x, y)) continue;
+        const k = key(x, y);
+        let best = Infinity;
+        for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+          const nx = x + dx, ny = y + dy;
+          if (nx < 0 || ny < 0 || nx >= cols || ny >= rows) continue;
+          best = Math.min(best, dist[key(nx, ny)] + 1);
+        }
+        if (best < dist[k]) dist[k] = best;
       }
     }
   }
-  return null;
+  return dist;
+}
+function fieldAtTile(map, field, tx, ty) {
+  tx = clampInt(tx, 0, map.cols - 1); ty = clampInt(ty, 0, map.rows - 1);
+  return field[ty * map.cols + tx];
+}
+function fieldAt(map, field, px, py) {
+  const fx = px / TILE - 0.5, fy = py / TILE - 0.5;
+  const tx0 = Math.floor(fx), ty0 = Math.floor(fy);
+  const sx = fx - tx0, sy = fy - ty0;
+  const d00 = fieldAtTile(map, field, tx0, ty0), d10 = fieldAtTile(map, field, tx0 + 1, ty0);
+  const d01 = fieldAtTile(map, field, tx0, ty0 + 1), d11 = fieldAtTile(map, field, tx0 + 1, ty0 + 1);
+  const top = d00 * (1 - sx) + d10 * sx, bot = d01 * (1 - sx) + d11 * sx;
+  return top * (1 - sy) + bot * sy;
+}
+function wallBitmask(map, pos, sensorDist, radius) {
+  let bits = 0;
+  for (let i = 0; i < 8; i++) {
+    const a = DIRS8[i];
+    const px = pos.x + Math.cos(a) * sensorDist, py = pos.y + Math.sin(a) * sensorDist;
+    if (circleHitsSolid(map, px, py, radius)) bits |= (1 << i);
+  }
+  return bits;
+}
+function goalDirBucket(pos, goal) {
+  const ang = Math.atan2(goal.y - pos.y, goal.x - pos.x);
+  const b = Math.round((ang / (Math.PI * 2)) * 8);
+  return ((b % 8) + 8) % 8;
+}
+function moveStateKey(gBucket, wallBits) { return gBucket * 256 + wallBits; }
+function moveQRow(brain, state) {
+  let row = brain.Q[state];
+  if (!row) { row = [0, 0, 0, 0, 0, 0, 0, 0]; brain.Q[state] = row; }
+  return row;
+}
+function pickMoveAction(brain, state, epsilon) {
+  if (Math.random() < epsilon) return Math.floor(Math.random() * 8);
+  const row = moveQRow(brain, state);
+  let best = 0, bestV = -Infinity;
+  for (let i = 0; i < 8; i++) { const v = row[i] + Math.random() * 1e-6; if (v > bestV) { bestV = v; best = i; } }
+  return best;
 }
 
 function castRay(map, x0, y0, x1, y1) {
@@ -585,9 +653,13 @@ class GameMap {
 }
 
 /* ======================= LEARNING / BRAINS ======================= */
-const BRAIN_KEYS = { hunter: 'HAS_hunterBrain_v1', hider: 'HAS_hiderBrain_v1', match: 'HAS_matchState_v1' };
+const BRAIN_KEYS = { hunter: 'HAS_hunterBrain_v1', hider: 'HAS_hiderBrain_v1', match: 'HAS_matchState_v1', move: 'HAS_moveBrain_v1' };
 function defaultHunterBrain() { return { epsilon: CONFIG.learning.epsilonStart, zoneValue: {}, zoneVisits: {}, spotPriority: {}, spotFound: {} }; }
 function defaultHiderBrain() { return { epsilon: CONFIG.learning.epsilonStart, spotValue: {}, spotDanger: {}, spotUses: {}, zoneHunterSightings: {} }; }
+// Shared "motor skill" brain for BOTH hunters and hiders -- walking around
+// obstacles isn't an adversarial skill like hiding-spot choice or patrol strategy,
+// so all 4 agents pool their experience into one Q-table and learn it together.
+function defaultMoveBrain() { return { epsilon: CONFIG.move.epsilonStart, Q: {}, totalDecisions: 0, totalBumps: 0, totalArrivals: 0 }; }
 function loadJSON(key, fallback) {
   try {
     const raw = localStorage.getItem(key);
@@ -616,42 +688,109 @@ function computeVisibility(hunter, target, map) {
 }
 
 /* ======================= ENTITY ======================= */
+// Movement is a learned motor skill (see MoveBrain): entities don't get a
+// pathfinder. They pick a goal (pixel point), then every decision tick they sense
+// nearby walls + coarse goal direction, choose one of 8 headings via a shared
+// Q-table, and get rewarded for genuinely closing distance (and penalized for
+// bumping walls) -- the same trial-and-error loop as the rest of the game's AI.
 class Entity {
   constructor(id, x, y, speed) {
     this.id = id; this.x = x; this.y = y; this.speed = speed;
-    this.angle = 0; this.path = null; this.pathIdx = 0; this.destPx = null; this.moving = false;
+    this.angle = 0; this.radius = 11;
+    this.goal = null; this.moveDir = 0;
+    this._decisionTimer = 0;
+    this._distField = null; this._distFieldGoalKey = null;
+    this._lastState = null; this._lastAction = null; this._lastDist = 0;
+    this._bumpedThisInterval = false;
+    this._recentProgress = []; this._forcedExploreLeft = 0;
   }
-  hasPath() { return !!this.path && this.pathIdx < this.path.length; }
-  goTo(map, tx, ty) {
-    tx = clampInt(tx, 0, map.cols - 1); ty = clampInt(ty, 0, map.rows - 1);
-    if (map.isSolid(tx, ty)) return false;
-    const start = map.pixelToTile(this.x, this.y);
-    const tilePath = astar(map, start, { x: tx, y: ty });
-    if (!tilePath || !tilePath.length) return false;
-    this.path = tilePath.map(t => map.tileCenter(t.x, t.y));
-    this.pathIdx = 0;
-    this.destPx = this.path[this.path.length - 1];
-    return true;
+  hasGoal() { return !!this.goal; }
+  setGoal(x, y) {
+    this.goal = { x, y };
+    this._lastState = null;
+    this._decisionTimer = 0;
+    this._recentProgress = [];
+    this._forcedExploreLeft = 0;
   }
-  stepAlongPath(dt, speedOverride) {
-    if (!this.hasPath()) { this.moving = false; return; }
-    let remaining = (speedOverride || this.speed) * dt;
-    while (remaining > 0 && this.pathIdx < this.path.length) {
-      const wp = this.path[this.pathIdx];
-      const dx = wp.x - this.x, dy = wp.y - this.y;
-      const d = Math.hypot(dx, dy);
-      if (d <= remaining) {
-        this.x = wp.x; this.y = wp.y;
-        if (d > 0.01) this.angle = Math.atan2(dy, dx);
-        remaining -= d;
-        this.pathIdx++;
-      } else {
-        this.x += dx / d * remaining; this.y += dy / d * remaining;
-        this.angle = lerpAngle(this.angle, Math.atan2(dy, dx), Math.min(1, dt * 10));
-        remaining = 0;
+  updateGoalPosition(x, y) {
+    if (!this.goal) { this.setGoal(x, y); return; }
+    this.goal.x = x; this.goal.y = y;
+  }
+  resetMovement() {
+    this.goal = null; this._lastState = null; this._decisionTimer = 0;
+    this._distField = null; this._distFieldGoalKey = null;
+    this._recentProgress = []; this._forcedExploreLeft = 0; this._bumpedThisInterval = false;
+  }
+
+  ensureDistField(map) {
+    if (!this.goal) return;
+    const t = map.pixelToTile(this.goal.x, this.goal.y);
+    const gk = t.x + ',' + t.y;
+    if (this._distFieldGoalKey !== gk) {
+      this._distField = computeDistanceField(map, t);
+      this._distFieldGoalKey = gk;
+    }
+  }
+
+  updateMovement(dt, map, game, speedOverride) {
+    if (!this.goal) return;
+    this.ensureDistField(map);
+    const spd = speedOverride || this.speed;
+    const dx = Math.cos(this.moveDir) * spd * dt, dy = Math.sin(this.moveDir) * spd * dt;
+    const moved = moveWithCollision(map, this, dx, dy);
+    if (moved < (Math.abs(dx) + Math.abs(dy)) * 0.4) this._bumpedThisInterval = true;
+    this.angle = lerpAngle(this.angle, this.moveDir, Math.min(1, dt * 10));
+
+    const pxDist = this.goal ? Math.hypot(this.goal.x - this.x, this.goal.y - this.y) : Infinity;
+    const arrived = pxDist < CONFIG.move.arriveDist;
+    this._decisionTimer -= dt;
+    if (arrived || this._decisionTimer <= 0) {
+      this.decisionStep(map, game, arrived);
+      if (arrived) this.goal = null;
+    }
+  }
+
+  decisionStep(map, game, arrived) {
+    const brain = game.moveBrain;
+    const distNow = this._distField ? fieldAt(map, this._distField, this.x, this.y) : 0;
+    if (this._lastState != null) {
+      let reward = (this._lastDist - distNow) * CONFIG.move.progressScale - CONFIG.move.stepPenalty;
+      if (this._bumpedThisInterval) reward -= CONFIG.move.bumpPenalty;
+      if (arrived) reward += CONFIG.move.arrivalBonus;
+      const row = moveQRow(brain, this._lastState);
+      let nextMax = 0;
+      if (!arrived && this.goal) {
+        const wb2 = wallBitmask(map, this, CONFIG.move.sensorDist, this.radius);
+        const gb2 = goalDirBucket(this, this.goal);
+        nextMax = Math.max(...moveQRow(brain, moveStateKey(gb2, wb2)));
+      }
+      row[this._lastAction] += CONFIG.move.alpha * (reward + CONFIG.move.gamma * nextMax - row[this._lastAction]);
+      brain.totalDecisions = (brain.totalDecisions || 0) + 1;
+      if (this._bumpedThisInterval) brain.totalBumps = (brain.totalBumps || 0) + 1;
+      if (arrived) brain.totalArrivals = (brain.totalArrivals || 0) + 1;
+
+      this._recentProgress.push(this._lastDist - distNow);
+      if (this._recentProgress.length > CONFIG.move.stuckWindow) this._recentProgress.shift();
+      if (this._recentProgress.length === CONFIG.move.stuckWindow) {
+        const sum = this._recentProgress.reduce((a, b) => a + b, 0);
+        if (sum < CONFIG.move.stuckThreshold) {
+          this._forcedExploreLeft = CONFIG.move.stuckBoostDecisions;
+          this._recentProgress = [];
+        }
       }
     }
-    this.moving = this.pathIdx < this.path.length;
+    this._bumpedThisInterval = false;
+    if (arrived || !this.goal) { this._lastState = null; return; }
+
+    const wb = wallBitmask(map, this, CONFIG.move.sensorDist, this.radius);
+    const gb = goalDirBucket(this, this.goal);
+    const state = moveStateKey(gb, wb);
+    let eps = brain.epsilon;
+    if (this._forcedExploreLeft > 0) { eps = Math.max(eps, CONFIG.move.stuckBoostEps); this._forcedExploreLeft--; }
+    const action = pickMoveAction(brain, state, eps);
+    this.moveDir = DIRS8[action];
+    this._lastState = state; this._lastAction = action; this._lastDist = distNow;
+    this._decisionTimer = CONFIG.move.decisionInterval;
   }
 }
 
@@ -666,12 +805,11 @@ class Hunter extends Entity {
   }
   resetForRound(x, y) {
     this.x = x; this.y = y;
-    this.state = 'PATROL'; this.path = null; this.pathIdx = 0; this.destPx = null;
+    this.state = 'PATROL'; this.resetMovement();
     this.meters = new Map(); this.lastSeen = new Map(); this.visibleIds = new Set();
     this.chaseId = null; this.searchQueue = []; this.searchIdx = 0; this.lingering = false; this.lingerTimer = 0;
     this.consumedBroadcasts = new Set();
     this._patrolArrived = false; this._patrolWaitTimer = 0;
-    this.lastRepathTime = -999;
     this.lastTargetLabel = 'Base';
     this.coordTarget = null; this.investigateTarget = null; this.pendingInvestigate = null;
   }
@@ -711,7 +849,7 @@ class Hunter extends Entity {
         this.stateTimer = CONFIG.hunter.coordFlashTime;
         this.coordTarget = { x: b.x, y: b.y };
         this.pendingInvestigate = { x: b.x, y: b.y, hiderId: b.hiderId };
-        this.path = null;
+        this.goal = null;
         this.lastTargetLabel = 'Receiving intel';
         return;
       }
@@ -722,8 +860,7 @@ class Hunter extends Entity {
       if (this.stateTimer <= 0) {
         this.state = 'INVESTIGATE';
         this.investigateTarget = this.pendingInvestigate;
-        const t = map.pixelToTile(this.investigateTarget.x, this.investigateTarget.y);
-        this.goTo(map, t.x, t.y);
+        this.setGoal(this.investigateTarget.x, this.investigateTarget.y);
         this.lastTargetLabel = 'Reported sighting';
       }
       return;
@@ -737,27 +874,21 @@ class Hunter extends Entity {
     if (bestId) {
       if (this.state !== 'CHASE' || this.chaseId !== bestId) {
         this.state = 'CHASE'; this.chaseId = bestId; this.lastTargetLabel = 'Chasing ' + bestId;
-        this.lastRepathTime = -999;
       }
     } else if (this.state === 'CHASE') {
       const ls = this.lastSeen.get(this.chaseId);
       this.state = 'INVESTIGATE';
       this.investigateTarget = ls || { x: this.x, y: this.y };
       this.lastTargetLabel = 'Last seen ' + this.chaseId;
-      const t = map.pixelToTile(this.investigateTarget.x, this.investigateTarget.y);
-      this.goTo(map, t.x, t.y);
+      this.setGoal(this.investigateTarget.x, this.investigateTarget.y);
       this.chaseId = null;
     }
 
     if (this.state === 'CHASE') {
       const hider = game.hiders.find(h => h.id === this.chaseId);
-      if (hider && game.simTime - this.lastRepathTime > 0.35) {
-        const t = map.pixelToTile(hider.x, hider.y);
-        this.goTo(map, t.x, t.y);
-        this.lastRepathTime = game.simTime;
-      }
+      if (hider) this.updateGoalPosition(hider.x, hider.y);
     } else if (this.state === 'INVESTIGATE') {
-      if (!this.hasPath()) {
+      if (!this.hasGoal()) {
         game.logEvent({ type: 'investigateArrive', hunter: this.id, x: this.x, y: this.y, zone: map.zoneOfPixel(this.x, this.y), t: game.simTime, resultedInSighting: false });
         this.state = 'SEARCH';
         this.buildSearchQueue(map, game);
@@ -785,7 +916,7 @@ class Hunter extends Entity {
     this.lingering = false;
     if (this.searchQueue.length) {
       const s0 = this.searchQueue[0];
-      this.goTo(map, s0.x, s0.y);
+      this.setGoal(s0.px, s0.py);
     }
   }
 
@@ -805,11 +936,11 @@ class Hunter extends Entity {
         this.lingering = false;
         this.searchIdx++;
         if (this.searchIdx >= this.searchQueue.length) { this.state = 'PATROL'; this.searchQueue = []; }
-        else { const next = this.searchQueue[this.searchIdx]; this.goTo(map, next.x, next.y); }
+        else { const next = this.searchQueue[this.searchIdx]; this.setGoal(next.px, next.py); }
       }
       return;
     }
-    if (!this.hasPath()) {
+    if (!this.hasGoal()) {
       this.lingering = true;
       this.lingerTimer = CONFIG.hunter.searchLinger;
       this._lingerSnapshot = game.hiders.filter(h => !h.caught).map(h => h.id);
@@ -817,7 +948,7 @@ class Hunter extends Entity {
   }
 
   updatePatrol(dt, map, game) {
-    if (this.hasPath()) return;
+    if (this.hasGoal()) return;
     if (this._patrolWaitTimer > 0) {
       this._patrolWaitTimer -= dt;
       this.angle += Math.sin(game.simTime * 1.3 + this.x) * 0.8 * dt;
@@ -835,7 +966,8 @@ class Hunter extends Entity {
     }
     if (!tile) tile = map.randomFloorTileInZone(zone);
     if (tile) {
-      this.goTo(map, tile.x, tile.y);
+      const c = map.tileCenter(tile.x, tile.y);
+      this.setGoal(c.x, c.y);
       this.lastTargetLabel = label;
       game.hunterBrain.zoneVisits[zone] = (game.hunterBrain.zoneVisits[zone] || 0) + 1;
       game.zoneLastVisited[zone] = game.simTime;
@@ -843,10 +975,10 @@ class Hunter extends Entity {
   }
 
   update(dt, map, game) {
-    const wasPathing = this.hasPath();
+    const hadGoal = this.hasGoal();
     const spd = this.state === 'CHASE' ? this.speed * CONFIG.hunter.chaseSpeedMult : this.speed;
-    this.stepAlongPath(dt, spd);
-    if (wasPathing && !this.hasPath() && this.state === 'PATROL') this._patrolArrived = true;
+    this.updateMovement(dt, map, game, spd);
+    if (hadGoal && !this.hasGoal() && this.state === 'PATROL') this._patrolArrived = true;
   }
 }
 
@@ -858,7 +990,7 @@ class Hider extends Entity {
     this.resetForRound(x, y);
   }
   resetForRound(x, y) {
-    this.x = x; this.y = y; this.path = null; this.pathIdx = 0; this.destPx = null;
+    this.x = x; this.y = y; this.resetMovement();
     this.caught = false; this.caughtAtSpot = null; this.currentSpotId = null;
     this.visitedSpots = new Set(); this.lastFleeTime = -999; this.state = 'SEEKING_SPOT';
     this.lastEval = []; this.nearestThreat = null;
@@ -893,7 +1025,7 @@ class Hider extends Entity {
     this.currentSpotId = spot.id;
     this.visitedSpots.add(spot.id);
     game.logEvent({ type: 'spotChosen', hider: this.id, spotId: spot.id, zone: spot.zone, t: game.simTime });
-    this.goTo(map, spot.x, spot.y);
+    this.setGoal(spot.px, spot.py);
     this.state = nextState || 'SEEKING_SPOT';
   }
 
@@ -940,9 +1072,9 @@ class Hider extends Entity {
   }
 
   update(dt, map, game) {
-    const wasPathing = this.hasPath();
-    this.stepAlongPath(dt);
-    if (wasPathing && !this.hasPath() && (this.state === 'SEEKING_SPOT' || this.state === 'FLEEING')) this.state = 'HIDDEN';
+    const hadGoal = this.hasGoal();
+    this.updateMovement(dt, map, game);
+    if (hadGoal && !this.hasGoal() && (this.state === 'SEEKING_SPOT' || this.state === 'FLEEING')) this.state = 'HIDDEN';
   }
 }
 
@@ -952,6 +1084,7 @@ class Game {
     this.map = new GameMap();
     this.hunterBrain = loadJSON(BRAIN_KEYS.hunter, defaultHunterBrain);
     this.hiderBrain = loadJSON(BRAIN_KEYS.hider, defaultHiderBrain);
+    this.moveBrain = loadJSON(BRAIN_KEYS.move, defaultMoveBrain);
     const ms = loadJSON(BRAIN_KEYS.match, () => ({ roundNum: 0, score: { hunters: 0, hiders: 0 }, history: [] }));
     this.roundNum = ms.roundNum || 0;
     this.score = ms.score || { hunters: 0, hiders: 0 };
@@ -1079,6 +1212,7 @@ class Game {
     this.applyHunterLearning();
     this.hunterBrain.epsilon = Math.max(CONFIG.learning.epsilonMin, this.hunterBrain.epsilon * CONFIG.learning.epsilonDecayPerRound);
     this.hiderBrain.epsilon = Math.max(CONFIG.learning.epsilonMin, this.hiderBrain.epsilon * CONFIG.learning.epsilonDecayPerRound);
+    this.moveBrain.epsilon = Math.max(CONFIG.move.epsilonMin, this.moveBrain.epsilon * CONFIG.learning.epsilonDecayPerRound);
     this.history.push({ round: this.roundNum, winner });
     if (this.history.length > 300) this.history.shift();
     this.persist();
@@ -1154,15 +1288,18 @@ class Game {
   persist() {
     saveJSON(BRAIN_KEYS.hunter, this.hunterBrain);
     saveJSON(BRAIN_KEYS.hider, this.hiderBrain);
+    saveJSON(BRAIN_KEYS.move, this.moveBrain);
     saveJSON(BRAIN_KEYS.match, { roundNum: this.roundNum, score: this.score, history: this.history });
   }
 
   resetLearning() {
     localStorage.removeItem(BRAIN_KEYS.hunter);
     localStorage.removeItem(BRAIN_KEYS.hider);
+    localStorage.removeItem(BRAIN_KEYS.move);
     localStorage.removeItem(BRAIN_KEYS.match);
     this.hunterBrain = defaultHunterBrain();
     this.hiderBrain = defaultHiderBrain();
+    this.moveBrain = defaultMoveBrain();
     this.roundNum = 0; this.score = { hunters: 0, hiders: 0 }; this.history = [];
     this.zoneLastVisited = {};
     this.pushFeed('round', 'Learning reset. Starting fresh.', 'neutral');
@@ -1261,6 +1398,7 @@ function drawHidingSpots(ctx, game) {
 }
 
 function drawHunterDebug(ctx, h, game) {
+  drawMoveSensors(ctx, game.map, h);
   const half = (CONFIG.hunter.fovAngle * Math.PI / 180) / 2;
   const stateColor = h.state === 'CHASE' ? 'rgba(255,92,92,0.20)' : (h.state === 'SEARCH' || h.state === 'INVESTIGATE') ? 'rgba(255,176,32,0.16)' : 'rgba(138,160,184,0.12)';
   ctx.beginPath();
@@ -1294,13 +1432,13 @@ function drawHunterDebug(ctx, h, game) {
     ctx.lineWidth = 2;
     ctx.stroke();
   }
-  if (h.hasPath() && h.destPx) {
+  if (h.hasGoal()) {
     ctx.beginPath();
-    ctx.arc(h.destPx.x, h.destPx.y, 5, 0, Math.PI * 2);
+    ctx.arc(h.goal.x, h.goal.y, 5, 0, Math.PI * 2);
     ctx.strokeStyle = 'rgba(255,255,255,0.5)';
     ctx.stroke();
     ctx.beginPath();
-    ctx.moveTo(h.x, h.y); ctx.lineTo(h.destPx.x, h.destPx.y);
+    ctx.moveTo(h.x, h.y); ctx.lineTo(h.goal.x, h.goal.y);
     ctx.strokeStyle = 'rgba(255,255,255,0.12)';
     ctx.setLineDash([3, 4]);
     ctx.stroke();
@@ -1362,11 +1500,35 @@ function drawHunter(ctx, h) {
   if (debugMode) drawLabel(ctx, h, h.state);
 }
 
-function drawHider(ctx, s) {
+function drawHider(ctx, s, map) {
   if (s.caught) return;
   const ring = TEAM_STATE_COLOR[s.state] || '#8aa0b8';
+  if (debugMode) drawMoveSensors(ctx, map, s);
   drawEntityBody(ctx, s, s.color, ring);
   if (debugMode) drawLabel(ctx, s, s.state + (s.currentSpotId ? (' · ' + s.currentSpotId) : ''));
+}
+
+// Small ring of dots around a moving entity showing its learned-navigation senses:
+// red dot = wall detected in that heading, dim green = clear, white ray = the
+// heading it actually picked this decision tick.
+function drawMoveSensors(ctx, map, e) {
+  for (let i = 0; i < 8; i++) {
+    const a = DIRS8[i];
+    const px = e.x + Math.cos(a) * CONFIG.move.sensorDist, py = e.y + Math.sin(a) * CONFIG.move.sensorDist;
+    const blocked = circleHitsSolid(map, px, py, e.radius);
+    ctx.beginPath();
+    ctx.arc(px, py, 2.2, 0, Math.PI * 2);
+    ctx.fillStyle = blocked ? 'rgba(255,92,92,0.85)' : 'rgba(53,208,127,0.3)';
+    ctx.fill();
+  }
+  if (e.hasGoal()) {
+    ctx.beginPath();
+    ctx.moveTo(e.x, e.y);
+    ctx.lineTo(e.x + Math.cos(e.moveDir) * 20, e.y + Math.sin(e.moveDir) * 20);
+    ctx.strokeStyle = 'rgba(255,255,255,0.6)';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+  }
 }
 
 function render(ctx, game) {
@@ -1375,7 +1537,7 @@ function render(ctx, game) {
   if (debugMode) drawZoneHeat(ctx, game);
   drawHidingSpots(ctx, game);
   if (debugMode) for (const h of game.hunters) drawHunterDebug(ctx, h, game);
-  for (const s of game.hiders) drawHider(ctx, s);
+  for (const s of game.hiders) drawHider(ctx, s, game.map);
   for (const h of game.hunters) drawHunter(ctx, h);
 }
 
@@ -1480,12 +1642,23 @@ const UI = {
 
   renderKnowledge(game) {
     const el = document.getElementById('panel-knowledge');
-    const hb = game.hiderBrain, ub = game.hunterBrain;
+    const hb = game.hiderBrain, ub = game.hunterBrain, mb = game.moveBrain;
     const spotRows = game.map.hidingSpots.slice().sort((a, b) => qGet(hb.spotValue, b.id) - qGet(hb.spotValue, a.id))
       .map(s => `<tr><td>${s.id}</td><td class="num">${qGet(hb.spotValue, s.id).toFixed(2)}</td><td class="num">${qGet(hb.spotDanger, s.id).toFixed(2)}</td><td class="num">${hb.spotUses[s.id] || 0}</td></tr>`).join('');
     const zoneRows = ALL_ZONES.slice().sort((a, b) => qGet(ub.zoneValue, b) - qGet(ub.zoneValue, a))
       .map(z => `<tr><td>${zoneLabel(z)}</td><td class="num">${qGet(ub.zoneValue, z).toFixed(2)}</td><td class="num">${ub.zoneVisits[z] || 0}</td></tr>`).join('');
+    const bumpRate = mb.totalDecisions ? (mb.totalBumps / mb.totalDecisions * 100) : 0;
+    const statesLearned = Object.keys(mb.Q).length;
     el.innerHTML = `
+      <div class="know-block">
+        <div class="know-title">Movement (shared motor skill) <span class="eps">ε=${mb.epsilon.toFixed(2)}</span></div>
+        <div class="eval-chips">
+          <span class="chip">decisions ${mb.totalDecisions}</span>
+          <span class="chip">goals reached ${mb.totalArrivals}</span>
+          <span class="chip">wall bumps ${bumpRate.toFixed(1)}%</span>
+          <span class="chip">states learned ${statesLearned}</span>
+        </div>
+      </div>
       <div class="know-block">
         <div class="know-title">Hider memory <span class="eps">ε=${hb.epsilon.toFixed(2)}</span></div>
         <table class="ktable"><thead><tr><th>Spot</th><th>Value</th><th>Danger</th><th>Uses</th></tr></thead><tbody>${spotRows}</tbody></table>
@@ -1516,6 +1689,7 @@ const UI = {
       ['Hunter senses', [['hunter.fovAngle', 'FOV angle (°)', 5], ['hunter.viewDist', 'View distance (px)', 10], ['hunter.speed', 'Move speed', 5], ['hunter.noticeThreshold', 'Notice threshold', 1]]],
       ['Hider senses', [['hider.speed', 'Move speed', 5], ['hider.perceptionRadius', 'Perception radius', 10], ['hider.dangerRadius', 'Danger radius', 10]]],
       ['Learning', [['learning.alpha', 'Learning rate α', 0.01], ['learning.epsilonStart', 'Start exploration ε', 0.01], ['learning.epsilonMin', 'Min exploration ε', 0.01], ['learning.epsilonDecayPerRound', 'ε decay / round', 0.001]]],
+      ['Movement learning', [['move.decisionInterval', 'Decision interval (s)', 0.01], ['move.sensorDist', 'Wall sensor range (px)', 2], ['move.alpha', 'Learning rate α', 0.01], ['move.epsilonStart', 'Start exploration ε', 0.01], ['move.epsilonMin', 'Min exploration ε', 0.01], ['move.bumpPenalty', 'Wall bump penalty', 0.1]]],
       ['Hider rewards', [['rewards.hiderSurvive', 'Survive round', 1], ['rewards.hiderBreakLOS', 'Break line of sight', 1], ['rewards.hiderReachSafe', 'Reach safe spot', 1], ['rewards.hiderAvoidNear', 'Avoid nearby hunter', 1], ['rewards.hiderCaught', 'Caught (penalty)', 1]]],
       ['Hunter rewards', [['rewards.hunterFind', 'Find a hider', 1], ['rewards.hunterInvestigateHit', 'Good investigate', 1], ['rewards.hunterDiscoverArea', 'Discover hiding area', 1], ['rewards.hunterWaste', 'Wasted search (penalty)', 1]]],
     ];
