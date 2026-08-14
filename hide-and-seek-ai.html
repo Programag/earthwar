@@ -1,0 +1,1591 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="color-scheme" content="dark">
+<title>AI Hide &amp; Seek — Learning Simulation</title>
+<style>
+  :root{
+    --bg:#0a0e13;
+    --panel:#101720;
+    --panel2:#151f2b;
+    --border:#233041;
+    --text:#dbe6f0;
+    --text-dim:#8496ab;
+    --hunter:#ff5c5c;
+    --hunter2:#ff9d4d;
+    --hider:#43c6ff;
+    --hider2:#7c8bff;
+    --accent:#ffb020;
+    --good:#35d07f;
+    --bad:#ff5c5c;
+    --spot:#8b5cf6;
+  }
+  *{box-sizing:border-box;}
+  html,body{height:100%;}
+  body{
+    margin:0;
+    background:var(--bg);
+    color:var(--text);
+    font:14px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+    display:flex;
+    flex-direction:column;
+    min-height:100vh;
+  }
+  .hunter-color{color:var(--hunter);}
+  .hider-color{color:var(--hider);}
+  .dim{color:var(--text-dim);}
+
+  .topbar{
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    gap:16px;
+    flex-wrap:wrap;
+    padding:10px 18px;
+    background:var(--panel);
+    border-bottom:1px solid var(--border);
+  }
+  .brand{display:flex;align-items:center;gap:10px;}
+  .brand-icon{font-size:26px;}
+  .brand h1{font-size:16px;margin:0;letter-spacing:.2px;}
+  .brand .sub{font-size:11px;color:var(--text-dim);}
+
+  .hud{display:flex;gap:18px;flex-wrap:wrap;}
+  .hud-stat{display:flex;flex-direction:column;align-items:center;min-width:52px;}
+  .hud-label{font-size:9px;text-transform:uppercase;letter-spacing:.06em;color:var(--text-dim);}
+  .hud-value{font:700 16px/1.2 ui-monospace,Menlo,Consolas,monospace;}
+
+  .controls{display:flex;align-items:center;gap:8px;flex-wrap:wrap;}
+  .ctl{display:flex;align-items:center;gap:5px;font-size:11px;color:var(--text-dim);}
+  .ctl select,.ctl input[type=number]{
+    background:var(--panel2);border:1px solid var(--border);color:var(--text);
+    border-radius:5px;padding:4px 6px;font-size:12px;width:56px;
+  }
+  .ctl.toggle{cursor:pointer;user-select:none;}
+  .ctl.toggle input{margin:0;}
+  .btn{
+    background:var(--panel2);border:1px solid var(--border);color:var(--text);
+    padding:6px 12px;border-radius:6px;font-size:12px;cursor:pointer;
+    transition:background .15s,border-color .15s;
+  }
+  .btn:hover{background:#1c2836;border-color:#33465c;}
+  .btn:disabled{opacity:.5;cursor:not-allowed;}
+  .btn.subtle{background:transparent;}
+  .btn.danger{border-color:#5c2323;color:#ff8080;}
+  .btn.danger:hover{background:#2a1414;}
+
+  .main{
+    flex:1;
+    display:flex;
+    gap:14px;
+    padding:14px 18px;
+    min-height:0;
+  }
+  .stage{
+    flex:1;
+    display:flex;
+    align-items:flex-start;
+    justify-content:center;
+    position:relative;
+    min-width:0;
+  }
+  canvas{
+    width:100%;
+    max-width:1280px;
+    height:auto;
+    display:block;
+    background:#0f161e;
+    border:1px solid var(--border);
+    border-radius:10px;
+    box-shadow:0 8px 30px rgba(0,0,0,.35);
+  }
+  .banner{
+    position:absolute;
+    top:16px;left:50%;
+    transform:translateX(-50%);
+    padding:8px 18px;
+    border-radius:20px;
+    background:rgba(10,14,19,.85);
+    border:1px solid var(--border);
+    font-weight:700;
+    font-size:14px;
+    backdrop-filter:blur(4px);
+    pointer-events:none;
+    transition:opacity .2s;
+  }
+  .banner.hidden{opacity:0;visibility:hidden;}
+  .banner.hunters{color:var(--hunter);border-color:#5c2323;}
+  .banner.hiders{color:var(--hider);border-color:#1f4a5c;}
+  .banner.hiding{color:var(--accent);border-color:#5c4a1f;}
+  .banner.matchover{color:#fff;border-color:var(--spot);}
+
+  .ff-overlay{
+    position:absolute;inset:0;
+    display:flex;align-items:center;justify-content:center;
+    background:rgba(10,14,19,.55);
+    border-radius:10px;
+    font-size:15px;font-weight:600;
+    color:var(--accent);
+    backdrop-filter:blur(2px);
+  }
+  .ff-overlay.hidden{display:none;}
+
+  .sidebar{
+    width:380px;
+    flex:none;
+    display:flex;
+    flex-direction:column;
+    background:var(--panel);
+    border:1px solid var(--border);
+    border-radius:10px;
+    overflow:hidden;
+    min-height:0;
+  }
+  .tabs{display:flex;border-bottom:1px solid var(--border);background:var(--panel2);}
+  .tab{
+    flex:1;background:transparent;border:none;color:var(--text-dim);
+    padding:10px 4px;font-size:11.5px;cursor:pointer;border-bottom:2px solid transparent;
+  }
+  .tab:hover{color:var(--text);}
+  .tab.active{color:var(--text);border-bottom-color:var(--accent);}
+  .tab-panels{flex:1;overflow-y:auto;min-height:0;}
+  .panel{display:none;padding:12px;}
+  .panel.active{display:block;}
+
+  .agent-card{
+    border:1px solid var(--border);border-radius:8px;padding:9px 10px;margin-bottom:9px;background:var(--panel2);
+  }
+  .agent-card.caught{opacity:.55;}
+  .agent-head{display:flex;align-items:center;gap:7px;margin-bottom:4px;}
+  .dot{width:9px;height:9px;border-radius:50%;flex:none;}
+  .agent-head b{font-size:12.5px;}
+  .state-badge{
+    margin-left:auto;font-size:9.5px;padding:2px 7px;border-radius:10px;
+    text-transform:uppercase;letter-spacing:.04em;font-weight:700;
+  }
+  .state-PATROL,.state-SEEKING_SPOT{background:#26313f;color:#9db3c9;}
+  .state-INVESTIGATE{background:#3a2f12;color:#ffb020;}
+  .state-CHASE{background:#3a1414;color:#ff5c5c;}
+  .state-SEARCH{background:#332a10;color:#e0a339;}
+  .state-COORDINATE{background:#0f2e3a;color:#43c6ff;}
+  .state-HIDDEN{background:#0f2536;color:#43c6ff;}
+  .state-FLEEING{background:#3a2412;color:#ff9d4d;}
+  .state-CAUGHT{background:#3a1414;color:#ff8080;}
+  .agent-line{font-size:11px;color:var(--text-dim);margin-bottom:6px;}
+  .agent-sub{font-size:10.5px;color:var(--text-dim);margin-top:4px;}
+  .meter{height:6px;border-radius:3px;background:#0b1017;overflow:hidden;}
+  .meter-fill{height:100%;transition:width .15s;}
+  .eval-list{display:flex;flex-direction:column;gap:2px;margin-top:4px;}
+  .eval-row{
+    display:flex;justify-content:space-between;font:11px ui-monospace,monospace;
+    color:var(--text-dim);padding:1px 5px;border-radius:4px;
+  }
+  .eval-row.chosen{background:#132030;color:var(--hider);}
+  .eval-chips{display:flex;flex-wrap:wrap;gap:4px;margin-top:6px;}
+  .chip{font:10px ui-monospace,monospace;background:#0b1017;border:1px solid var(--border);border-radius:4px;padding:2px 5px;color:var(--text-dim);}
+
+  .feed{display:flex;flex-direction:column;gap:5px;}
+  .feed-row{
+    display:flex;align-items:center;gap:6px;font-size:11.5px;padding:5px 7px;border-radius:6px;
+    background:var(--panel2);border-left:3px solid var(--border);
+  }
+  .feed-row.good{border-left-color:var(--good);}
+  .feed-row.bad{border-left-color:var(--bad);}
+  .feed-row.neutral{border-left-color:var(--accent);}
+  .feed-icon{flex:none;}
+  .feed-text{flex:1;color:var(--text);}
+  .feed-round{flex:none;color:var(--text-dim);font-size:10px;}
+
+  .know-block{margin-bottom:16px;}
+  .know-title{font-size:12px;font-weight:700;margin-bottom:6px;display:flex;justify-content:space-between;}
+  .eps{color:var(--text-dim);font-weight:400;font:11px ui-monospace,monospace;}
+  .ktable{width:100%;border-collapse:collapse;font-size:11px;}
+  .ktable th{text-align:left;color:var(--text-dim);font-weight:600;padding:3px 5px;border-bottom:1px solid var(--border);}
+  .ktable td{padding:3px 5px;border-bottom:1px solid #16202b;font:11px ui-monospace,monospace;}
+  .ktable td.num{text-align:right;}
+  .ktable tr:hover td{background:#182330;}
+
+  .hist-totals{display:flex;gap:16px;align-items:baseline;margin-bottom:10px;font-size:13px;font-weight:700;}
+  .hist-totals .dim{font-weight:400;font-size:11px;}
+  .hist-strip{display:flex;flex-wrap:wrap;gap:2px;}
+  .hist-cell{width:11px;height:16px;border-radius:2px;background:var(--border);}
+  .hist-cell.hunters{background:var(--hunter);}
+  .hist-cell.hiders{background:var(--hider);}
+
+  .cfg-group{margin-bottom:14px;}
+  .cfg-title{font-size:11.5px;font-weight:700;color:var(--accent);margin-bottom:6px;text-transform:uppercase;letter-spacing:.04em;}
+  .cfg-row{display:flex;justify-content:space-between;align-items:center;gap:8px;font-size:11.5px;padding:3px 0;}
+  .cfg-row input{width:70px;background:var(--panel2);border:1px solid var(--border);color:var(--text);border-radius:5px;padding:3px 6px;font-size:11.5px;}
+  .cfg-note{font-size:10.5px;line-height:1.5;}
+
+  .foot{padding:8px 18px;font-size:11px;color:var(--text-dim);border-top:1px solid var(--border);background:var(--panel);}
+
+  ::-webkit-scrollbar{width:9px;height:9px;}
+  ::-webkit-scrollbar-track{background:transparent;}
+  ::-webkit-scrollbar-thumb{background:#233041;border-radius:5px;}
+  ::-webkit-scrollbar-thumb:hover{background:#324153;}
+
+  @media (max-width:980px){
+    .main{flex-direction:column;}
+    .sidebar{width:100%;max-height:420px;}
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-icon">🫥</span>
+      <div>
+        <h1>AI Hide &amp; Seek</h1>
+        <div class="sub">two learning systems, one arms race</div>
+      </div>
+    </div>
+    <div class="hud">
+      <div class="hud-stat"><span class="hud-label">Round</span><span id="hudRound" class="hud-value">0</span></div>
+      <div class="hud-stat"><span class="hud-label">Phase</span><span id="hudPhase" class="hud-value">—</span></div>
+      <div class="hud-stat"><span class="hud-label">Time</span><span id="hudTimer" class="hud-value">0:00</span></div>
+      <div class="hud-stat"><span class="hud-label">Hunters</span><span id="hudScoreHunters" class="hud-value hunter-color">0</span></div>
+      <div class="hud-stat"><span class="hud-label">Hiders</span><span id="hudScoreHiders" class="hud-value hider-color">0</span></div>
+    </div>
+    <div class="controls">
+      <button id="btnPause" class="btn">⏸ Pause</button>
+      <label class="ctl">Speed
+        <select id="selSpeed">
+          <option value="1">1x</option>
+          <option value="2">2x</option>
+          <option value="4">4x</option>
+          <option value="8">8x</option>
+        </select>
+      </label>
+      <label class="ctl">Rounds<input id="numFF" type="number" min="1" max="200" value="10"></label>
+      <button id="btnFF" class="btn">⏩ Simulate</button>
+      <label class="ctl toggle"><input id="chkDebug" type="checkbox" checked> Debug overlay</label>
+      <button id="btnResetMatch" class="btn subtle">Reset Match</button>
+      <button id="btnResetLearning" class="btn danger">Reset Learning</button>
+    </div>
+  </header>
+
+  <div class="main">
+    <div class="stage">
+      <canvas id="game" width="1280" height="800"></canvas>
+      <div id="banner" class="banner hidden"></div>
+      <div id="ffOverlay" class="ff-overlay hidden">⏩ Simulating rounds…</div>
+    </div>
+    <aside class="sidebar">
+      <div class="tabs">
+        <button class="tab active" data-tab="agents">Agents</button>
+        <button class="tab" data-tab="rewards">Rewards</button>
+        <button class="tab" data-tab="knowledge">Knowledge</button>
+        <button class="tab" data-tab="history">History</button>
+        <button class="tab" data-tab="config">Config</button>
+      </div>
+      <div class="tab-panels">
+        <section id="panel-agents" class="panel active"></section>
+        <section id="panel-rewards" class="panel"><div id="rewardFeed" class="feed"></div></section>
+        <section id="panel-knowledge" class="panel"></section>
+        <section id="panel-history" class="panel"></section>
+        <section id="panel-config" class="panel"></section>
+      </div>
+    </aside>
+  </div>
+  <footer class="foot">
+    2 AI hunters vs 2 AI hiders · learned knowledge (Q-values) persists in this browser between rounds via localStorage · toggle <b>Debug overlay</b> for FOV cones, line-of-sight rays and live reasoning.
+  </footer>
+</div>
+
+<script>
+'use strict';
+
+/* ======================= CONFIG ======================= */
+const CONFIG = {
+  totalRounds: 20,
+  simSpeed: 1,
+  hunter: {
+    speed: 95, chaseSpeedMult: 1.35,
+    fovAngle: 100, viewDist: 260,
+    noticeThreshold: 30, catchThreshold: 92,
+    noticeRate: 65, decayRate: 20,
+    searchRadius: 200, searchLinger: 1.8, searchMaxSpots: 5,
+    patrolDwell: 2.6, coordFlashTime: 0.8, broadcastWindow: 5,
+  },
+  hider: {
+    speed: 88, perceptionRadius: 260, dangerRadius: 150,
+    fleeCooldown: 2.5, predictHorizon: 1.1,
+  },
+  round: { hideDuration: 4, seekDuration: 120, endBanner: 2.6 },
+  rewards: {
+    hiderSurvive: 10, hiderBreakLOS: 3, hiderReachSafe: 2, hiderAvoidNear: 1, hiderCaught: -10,
+    hunterFind: 10, hunterInvestigateHit: 3, hunterDiscoverArea: 2, hunterWaste: -1,
+  },
+  learning: { alpha: 0.25, epsilonStart: 0.35, epsilonMin: 0.05, epsilonDecayPerRound: 0.965, dangerDecay: 0.9, heatDecay: 0.9 },
+};
+
+/* ======================= UTIL ======================= */
+function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+function clampInt(v, lo, hi) { return Math.max(lo, Math.min(hi, Math.round(v))); }
+function choice(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
+function rand(a, b) { return a + Math.random() * (b - a); }
+function normalizeAngle(a) { while (a > Math.PI) a -= Math.PI * 2; while (a < -Math.PI) a += Math.PI * 2; return a; }
+function lerpAngle(a, b, t) { return a + normalizeAngle(b - a) * t; }
+function qGet(dict, key) { return dict[key] || 0; }
+function qUpdate(dict, key, reward, alpha) { const old = dict[key] || 0; dict[key] = old + alpha * (reward - old); return dict[key]; }
+function pickEpsilonGreedy(items, scoreFn, epsilon) {
+  if (!items.length) return null;
+  if (Math.random() < epsilon) return items[Math.floor(Math.random() * items.length)];
+  let best = null, bestScore = -Infinity;
+  for (const it of items) {
+    const s = scoreFn(it) + Math.random() * 0.001;
+    if (s > bestScore) { bestScore = s; best = it; }
+  }
+  return best;
+}
+function escapeHtml(s) { return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
+function formatTime(s) { s = Math.max(0, Math.ceil(s)); const m = Math.floor(s / 60), r = s % 60; return m + ':' + String(r).padStart(2, '0'); }
+function zoneLabel(z) { const zx = z % ZONE_COLS, zy = Math.floor(z / ZONE_COLS); return 'ABCD'[zx] + (zy + 1); }
+function feedIcon(kind) { return { catch: '🎯', reward: '⚙️', round: '🚩' }[kind] || '•'; }
+
+/* ======================= MAP ======================= */
+const TILE = 40, COLS = 32, ROWS = 20;
+const ZONE_COLS = 4, ZONE_ROWS = 4;
+const ALL_ZONES = Array.from({ length: ZONE_COLS * ZONE_ROWS }, (_, i) => i);
+
+function makeGrid() {
+  const g = [];
+  for (let y = 0; y < ROWS; y++) g.push(new Array(COLS).fill('.'));
+  return g;
+}
+function rect(g, x0, y0, x1, y1, ch) {
+  for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) g[y][x] = ch;
+}
+
+function buildMap() {
+  const g = makeGrid();
+  const hidingSpots = [];
+  const spawn = { hunters: [], hiders: [] };
+
+  rect(g, 0, 0, COLS - 1, 0, '#');
+  rect(g, 0, ROWS - 1, COLS - 1, ROWS - 1, '#');
+  rect(g, 0, 0, 0, ROWS - 1, '#');
+  rect(g, COLS - 1, 0, COLS - 1, ROWS - 1, '#');
+
+  rect(g, 1, 8, 30, 8, '#');
+  rect(g, 1, 12, 30, 12, '#');
+  rect(g, 5, 8, 6, 8, '.');
+  rect(g, 15, 8, 16, 8, '.');
+  rect(g, 25, 8, 26, 8, '.');
+  rect(g, 5, 12, 6, 12, '.');
+  rect(g, 15, 12, 16, 12, '.');
+  rect(g, 25, 12, 26, 12, '.');
+
+  rect(g, 10, 1, 10, 7, '#');
+  rect(g, 10, 4, 10, 4, '.');
+  rect(g, 21, 1, 21, 7, '#');
+  rect(g, 21, 4, 21, 4, '.');
+
+  rect(g, 10, 13, 10, 18, '#');
+  rect(g, 10, 15, 10, 16, '.');
+  rect(g, 21, 13, 21, 18, '#');
+  rect(g, 21, 15, 21, 16, '.');
+
+  // Room A: Storage (rows 1-7, cols 1-9)
+  rect(g, 3, 2, 3, 3, '#');
+  hidingSpots.push({ x: 2, y: 2, id: 'Store-1' });
+  rect(g, 7, 5, 7, 6, '#');
+  hidingSpots.push({ x: 8, y: 6, id: 'Store-2' });
+  rect(g, 6, 2, 6, 2, '#');
+
+  // Room B: Hall (rows 1-7, cols 11-20) — open, risky
+  rect(g, 13, 3, 13, 3, '#');
+  rect(g, 17, 3, 17, 3, '#');
+  rect(g, 15, 5, 15, 5, '#');
+  hidingSpots.push({ x: 19, y: 2, id: 'Hall-1' });
+
+  // Room C: Office (rows 1-7, cols 22-30)
+  rect(g, 24, 2, 24, 3, '#');
+  hidingSpots.push({ x: 25, y: 2, id: 'Office-1' });
+  rect(g, 28, 5, 28, 6, '#');
+  hidingSpots.push({ x: 29, y: 6, id: 'Office-2' });
+  rect(g, 29, 2, 29, 2, '#');
+
+  // Hub (rows 9-11)
+  rect(g, 8, 10, 8, 10, '#');
+  rect(g, 16, 9, 16, 9, '#');
+  rect(g, 16, 11, 16, 11, '#');
+  rect(g, 23, 10, 23, 10, '#');
+  hidingSpots.push({ x: 2, y: 9, id: 'HUB1' });
+  hidingSpots.push({ x: 29, y: 11, id: 'HUB2' });
+
+  // Room D: Maze/closet (rows 13-18, cols 1-9)
+  rect(g, 3, 14, 3, 16, '#');
+  rect(g, 6, 14, 7, 14, '#');
+  hidingSpots.push({ x: 2, y: 14, id: 'Maze-1' });
+  hidingSpots.push({ x: 2, y: 17, id: 'Maze-2' });
+  hidingSpots.push({ x: 8, y: 16, id: 'Maze-3' });
+  hidingSpots.push({ x: 8, y: 13, id: 'Maze-4' });
+
+  // Room E: Big open hall (rows 13-18, cols 11-20)
+  rect(g, 14, 15, 14, 15, '#');
+  rect(g, 17, 16, 17, 16, '#');
+  rect(g, 15, 17, 16, 17, '#');
+  hidingSpots.push({ x: 15, y: 16, id: 'Atrium-1' });
+
+  // Room F: Cluttered storage (rows 13-18, cols 22-30)
+  rect(g, 24, 14, 25, 14, '#');
+  rect(g, 25, 15, 25, 15, '#');
+  rect(g, 27, 16, 27, 17, '#');
+  rect(g, 28, 17, 28, 17, '#');
+  hidingSpots.push({ x: 23, y: 14, id: 'Vault-1' });
+  hidingSpots.push({ x: 24, y: 16, id: 'Vault-2' });
+  hidingSpots.push({ x: 29, y: 13, id: 'Vault-3' });
+  hidingSpots.push({ x: 26, y: 18, id: 'Vault-4' });
+
+  spawn.hunters.push({ x: 15, y: 9 }, { x: 16, y: 10 });
+  spawn.hiders.push({ x: 2, y: 5 }, { x: 29, y: 16 });
+
+  return { grid: g, hidingSpots, spawn };
+}
+
+function isSolidTile(map, x, y) {
+  if (x < 0 || y < 0 || x >= map.cols || y >= map.rows) return true;
+  return map.grid[y][x] === '#';
+}
+
+function astar(map, start, goal) {
+  const key = (x, y) => y * map.cols + x;
+  const open = new Map();
+  const gScore = new Map();
+  const fScore = new Map();
+  const cameFrom = new Map();
+  function heuristic(a, b) {
+    const dx = Math.abs(a.x - b.x), dy = Math.abs(a.y - b.y);
+    return Math.max(dx, dy) + (Math.SQRT2 - 1) * Math.min(dx, dy);
+  }
+  const startK = key(start.x, start.y);
+  gScore.set(startK, 0);
+  fScore.set(startK, heuristic(start, goal));
+  open.set(startK, start);
+
+  let iterations = 0;
+  while (open.size > 0) {
+    if (++iterations > 5000) return null;
+    let currentK = null, currentF = Infinity, current = null;
+    for (const [k, node] of open) {
+      const f = fScore.get(k) ?? Infinity;
+      if (f < currentF) { currentF = f; currentK = k; current = node; }
+    }
+    if (current.x === goal.x && current.y === goal.y) {
+      const path = [current];
+      let ck = currentK;
+      while (cameFrom.has(ck)) { const prev = cameFrom.get(ck); path.push(prev.node); ck = prev.k; }
+      return path.reverse();
+    }
+    open.delete(currentK);
+    const dirs = [[1, 0, 1], [-1, 0, 1], [0, 1, 1], [0, -1, 1], [1, 1, Math.SQRT2], [1, -1, Math.SQRT2], [-1, 1, Math.SQRT2], [-1, -1, Math.SQRT2]];
+    for (const [dx, dy, cost] of dirs) {
+      const nx = current.x + dx, ny = current.y + dy;
+      if (map.isSolid(nx, ny)) continue;
+      if (dx !== 0 && dy !== 0 && (map.isSolid(current.x + dx, current.y) || map.isSolid(current.x, current.y + dy))) continue;
+      const nk = key(nx, ny);
+      const tentativeG = gScore.get(currentK) + cost;
+      if (tentativeG < (gScore.get(nk) ?? Infinity)) {
+        cameFrom.set(nk, { node: current, k: currentK });
+        gScore.set(nk, tentativeG);
+        fScore.set(nk, tentativeG + heuristic({ x: nx, y: ny }, goal));
+        if (!open.has(nk)) open.set(nk, { x: nx, y: ny });
+      }
+    }
+  }
+  return null;
+}
+
+function castRay(map, x0, y0, x1, y1) {
+  const tx0 = x0 / TILE, ty0 = y0 / TILE, tx1 = x1 / TILE, ty1 = y1 / TILE;
+  let x = Math.floor(tx0), y = Math.floor(ty0);
+  const dx = tx1 - tx0, dy = ty1 - ty0;
+  const dist = Math.hypot(dx, dy);
+  if (dist === 0) return true;
+  const stepX = dx > 0 ? 1 : -1, stepY = dy > 0 ? 1 : -1;
+  const tDeltaX = dx !== 0 ? Math.abs(1 / dx) : Infinity;
+  const tDeltaY = dy !== 0 ? Math.abs(1 / dy) : Infinity;
+  let tMaxX = dx !== 0 ? ((stepX > 0 ? (x + 1 - tx0) : (tx0 - x)) * tDeltaX) : Infinity;
+  let tMaxY = dy !== 0 ? ((stepY > 0 ? (y + 1 - ty0) : (ty0 - y)) * tDeltaY) : Infinity;
+  let guard = 0;
+  while (guard++ < 1000) {
+    if (map.isSolid(x, y)) return false;
+    if (x === Math.floor(tx1) && y === Math.floor(ty1)) return true;
+    if (tMaxX < tMaxY) { tMaxX += tDeltaX; x += stepX; } else { tMaxY += tDeltaY; y += stepY; }
+    if (Math.min(tMaxX, tMaxY) > dist + 1) return true;
+  }
+  return true;
+}
+
+function computeOpenness(map, tx, ty) {
+  const c = map.tileCenter(tx, ty);
+  const rays = 12, maxDist = 320, step = 8;
+  let total = 0;
+  for (let i = 0; i < rays; i++) {
+    const a = (i / rays) * Math.PI * 2;
+    const dx = Math.cos(a), dy = Math.sin(a);
+    let d = 0;
+    while (d < maxDist) {
+      const px = c.x + dx * d, py = c.y + dy * d;
+      const t = map.pixelToTile(px, py);
+      if (map.isSolid(t.x, t.y)) break;
+      d += step;
+    }
+    total += Math.min(d, maxDist) / maxDist;
+  }
+  return total / rays;
+}
+
+function countOpenOctants(map, tx, ty, radius) {
+  const dirs = [[1, 0], [1, 1], [0, 1], [-1, 1], [-1, 0], [-1, -1], [0, -1], [1, -1]];
+  let n = 0;
+  for (const [dx, dy] of dirs) {
+    const midR = Math.max(1, Math.round(radius / 2));
+    const mx = tx + dx * midR, my = ty + dy * midR;
+    const ex = tx + dx * radius, ey = ty + dy * radius;
+    if (!map.isSolid(mx, my) && !map.isSolid(ex, ey)) n++;
+  }
+  return n;
+}
+
+class GameMap {
+  constructor() {
+    const built = buildMap();
+    this.grid = built.grid; this.hidingSpots = built.hidingSpots; this.spawn = built.spawn;
+    this.cols = COLS; this.rows = ROWS;
+    this.zoneCols = ZONE_COLS; this.zoneRows = ZONE_ROWS;
+    this.zoneW = COLS / ZONE_COLS; this.zoneH = ROWS / ZONE_ROWS;
+    this.floorTiles = [];
+    for (let y = 0; y < this.rows; y++) for (let x = 0; x < this.cols; x++) if (!isSolidTile(this, x, y)) this.floorTiles.push({ x, y });
+    for (const s of this.hidingSpots) {
+      const c = this.tileCenter(s.x, s.y);
+      s.px = c.x; s.py = c.y;
+      s.zone = this.zoneOf(s.x, s.y);
+      s.openness = computeOpenness(this, s.x, s.y);
+      s.escapeRoutes = countOpenOctants(this, s.x, s.y, 4);
+      s.approachDirections = countOpenOctants(this, s.x, s.y, 1);
+    }
+  }
+  isSolid(x, y) { return isSolidTile(this, x, y); }
+  pixelToTile(px, py) { return { x: Math.floor(px / TILE), y: Math.floor(py / TILE) }; }
+  tileCenter(tx, ty) { return { x: tx * TILE + TILE / 2, y: ty * TILE + TILE / 2 }; }
+  zoneOf(tx, ty) { return Math.floor(tx / this.zoneW) + Math.floor(ty / this.zoneH) * this.zoneCols; }
+  zoneOfPixel(px, py) { const t = this.pixelToTile(px, py); return this.zoneOf(t.x, t.y); }
+  raycastClear(x0, y0, x1, y1) { return castRay(this, x0, y0, x1, y1); }
+  randomFloorTileInZone(z) {
+    const c = this.floorTiles.filter(t => this.zoneOf(t.x, t.y) === z);
+    if (!c.length) return null;
+    return choice(c);
+  }
+}
+
+/* ======================= LEARNING / BRAINS ======================= */
+const BRAIN_KEYS = { hunter: 'HAS_hunterBrain_v1', hider: 'HAS_hiderBrain_v1', match: 'HAS_matchState_v1' };
+function defaultHunterBrain() { return { epsilon: CONFIG.learning.epsilonStart, zoneValue: {}, zoneVisits: {}, spotPriority: {}, spotFound: {} }; }
+function defaultHiderBrain() { return { epsilon: CONFIG.learning.epsilonStart, spotValue: {}, spotDanger: {}, spotUses: {}, zoneHunterSightings: {} }; }
+function loadJSON(key, fallback) {
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return fallback();
+    return Object.assign(fallback(), JSON.parse(raw));
+  } catch (e) { return fallback(); }
+}
+function saveJSON(key, obj) { try { localStorage.setItem(key, JSON.stringify(obj)); } catch (e) {} }
+
+/* ======================= FOV ======================= */
+function computeVisibility(hunter, target, map) {
+  const dx = target.x - hunter.x, dy = target.y - hunter.y;
+  const dist = Math.hypot(dx, dy);
+  if (dist > CONFIG.hunter.viewDist) return { visible: false, dist };
+  const half = (CONFIG.hunter.fovAngle * Math.PI / 180) / 2;
+  let angFrac = 1;
+  // Point-blank range (roughly two entity radii): notice regardless of exact facing,
+  // since atan2 of a near-zero vector is degenerate and shouldn't gate close contact.
+  if (dist > 22) {
+    const diff = Math.abs(normalizeAngle(Math.atan2(dy, dx) - hunter.angle));
+    if (diff > half) return { visible: false, dist };
+    angFrac = 1 - diff / half;
+  }
+  if (!map.raycastClear(hunter.x, hunter.y, target.x, target.y)) return { visible: false, dist };
+  return { visible: true, dist, angFrac };
+}
+
+/* ======================= ENTITY ======================= */
+class Entity {
+  constructor(id, x, y, speed) {
+    this.id = id; this.x = x; this.y = y; this.speed = speed;
+    this.angle = 0; this.path = null; this.pathIdx = 0; this.destPx = null; this.moving = false;
+  }
+  hasPath() { return !!this.path && this.pathIdx < this.path.length; }
+  goTo(map, tx, ty) {
+    tx = clampInt(tx, 0, map.cols - 1); ty = clampInt(ty, 0, map.rows - 1);
+    if (map.isSolid(tx, ty)) return false;
+    const start = map.pixelToTile(this.x, this.y);
+    const tilePath = astar(map, start, { x: tx, y: ty });
+    if (!tilePath || !tilePath.length) return false;
+    this.path = tilePath.map(t => map.tileCenter(t.x, t.y));
+    this.pathIdx = 0;
+    this.destPx = this.path[this.path.length - 1];
+    return true;
+  }
+  stepAlongPath(dt, speedOverride) {
+    if (!this.hasPath()) { this.moving = false; return; }
+    let remaining = (speedOverride || this.speed) * dt;
+    while (remaining > 0 && this.pathIdx < this.path.length) {
+      const wp = this.path[this.pathIdx];
+      const dx = wp.x - this.x, dy = wp.y - this.y;
+      const d = Math.hypot(dx, dy);
+      if (d <= remaining) {
+        this.x = wp.x; this.y = wp.y;
+        if (d > 0.01) this.angle = Math.atan2(dy, dx);
+        remaining -= d;
+        this.pathIdx++;
+      } else {
+        this.x += dx / d * remaining; this.y += dy / d * remaining;
+        this.angle = lerpAngle(this.angle, Math.atan2(dy, dx), Math.min(1, dt * 10));
+        remaining = 0;
+      }
+    }
+    this.moving = this.pathIdx < this.path.length;
+  }
+}
+
+/* ======================= HUNTER ======================= */
+const HUNTER_STATES = ['PATROL', 'INVESTIGATE', 'CHASE', 'SEARCH', 'COORDINATE'];
+
+class Hunter extends Entity {
+  constructor(id, x, y, color) {
+    super(id, x, y, CONFIG.hunter.speed);
+    this.color = color;
+    this.resetForRound(x, y);
+  }
+  resetForRound(x, y) {
+    this.x = x; this.y = y;
+    this.state = 'PATROL'; this.path = null; this.pathIdx = 0; this.destPx = null;
+    this.meters = new Map(); this.lastSeen = new Map(); this.visibleIds = new Set();
+    this.chaseId = null; this.searchQueue = []; this.searchIdx = 0; this.lingering = false; this.lingerTimer = 0;
+    this.consumedBroadcasts = new Set();
+    this._patrolArrived = false; this._patrolWaitTimer = 0;
+    this.lastRepathTime = -999;
+    this.lastTargetLabel = 'Base';
+    this.coordTarget = null; this.investigateTarget = null; this.pendingInvestigate = null;
+  }
+
+  perceive(dt, hiders, map, game) {
+    this.visibleIds.clear();
+    for (const hider of hiders) {
+      const vis = computeVisibility(this, hider, map);
+      const cur = this.meters.get(hider.id) || 0;
+      if (vis.visible) {
+        this.visibleIds.add(hider.id);
+        const rate = CONFIG.hunter.noticeRate * (0.4 + 0.6 * (1 - vis.dist / CONFIG.hunter.viewDist)) * (0.4 + 0.6 * vis.angFrac);
+        const next = Math.min(CONFIG.hunter.catchThreshold, cur + rate * dt);
+        this.meters.set(hider.id, next);
+        const zone = map.zoneOfPixel(hider.x, hider.y);
+        this.lastSeen.set(hider.id, { x: hider.x, y: hider.y, time: game.simTime, zone });
+        if (cur < CONFIG.hunter.noticeThreshold && next >= CONFIG.hunter.noticeThreshold) {
+          game.logEvent({ type: 'sighting', hunter: this.id, hider: hider.id, x: hider.x, y: hider.y, zone, t: game.simTime });
+          game.broadcast({ from: this.id, hiderId: hider.id, x: hider.x, y: hider.y, t: game.simTime });
+        }
+      } else if (cur > 0) {
+        const next = Math.max(0, cur - CONFIG.hunter.decayRate * dt);
+        this.meters.set(hider.id, next);
+        if (cur >= CONFIG.hunter.noticeThreshold && next < CONFIG.hunter.noticeThreshold) {
+          game.logEvent({ type: 'losBreak', hunter: this.id, hider: hider.id, x: hider.x, y: hider.y, zone: map.zoneOfPixel(hider.x, hider.y), t: game.simTime });
+        }
+      }
+    }
+  }
+
+  decideState(dt, map, game) {
+    if (this.state !== 'CHASE' && this.state !== 'COORDINATE') {
+      const b = game.blackboard.sightings.find(s => s.from !== this.id && !this.consumedBroadcasts.has(s.t + ':' + s.from) && (game.simTime - s.t) < CONFIG.hunter.broadcastWindow);
+      if (b) {
+        this.consumedBroadcasts.add(b.t + ':' + b.from);
+        this.state = 'COORDINATE';
+        this.stateTimer = CONFIG.hunter.coordFlashTime;
+        this.coordTarget = { x: b.x, y: b.y };
+        this.pendingInvestigate = { x: b.x, y: b.y, hiderId: b.hiderId };
+        this.path = null;
+        this.lastTargetLabel = 'Receiving intel';
+        return;
+      }
+    }
+
+    if (this.state === 'COORDINATE') {
+      this.stateTimer -= dt;
+      if (this.stateTimer <= 0) {
+        this.state = 'INVESTIGATE';
+        this.investigateTarget = this.pendingInvestigate;
+        const t = map.pixelToTile(this.investigateTarget.x, this.investigateTarget.y);
+        this.goTo(map, t.x, t.y);
+        this.lastTargetLabel = 'Reported sighting';
+      }
+      return;
+    }
+
+    let bestId = null, bestMeter = -1;
+    for (const id of this.visibleIds) {
+      const m = this.meters.get(id) || 0;
+      if (m >= CONFIG.hunter.noticeThreshold && m > bestMeter) { bestMeter = m; bestId = id; }
+    }
+    if (bestId) {
+      if (this.state !== 'CHASE' || this.chaseId !== bestId) {
+        this.state = 'CHASE'; this.chaseId = bestId; this.lastTargetLabel = 'Chasing ' + bestId;
+        this.lastRepathTime = -999;
+      }
+    } else if (this.state === 'CHASE') {
+      const ls = this.lastSeen.get(this.chaseId);
+      this.state = 'INVESTIGATE';
+      this.investigateTarget = ls || { x: this.x, y: this.y };
+      this.lastTargetLabel = 'Last seen ' + this.chaseId;
+      const t = map.pixelToTile(this.investigateTarget.x, this.investigateTarget.y);
+      this.goTo(map, t.x, t.y);
+      this.chaseId = null;
+    }
+
+    if (this.state === 'CHASE') {
+      const hider = game.hiders.find(h => h.id === this.chaseId);
+      if (hider && game.simTime - this.lastRepathTime > 0.35) {
+        const t = map.pixelToTile(hider.x, hider.y);
+        this.goTo(map, t.x, t.y);
+        this.lastRepathTime = game.simTime;
+      }
+    } else if (this.state === 'INVESTIGATE') {
+      if (!this.hasPath()) {
+        game.logEvent({ type: 'investigateArrive', hunter: this.id, x: this.x, y: this.y, zone: map.zoneOfPixel(this.x, this.y), t: game.simTime, resultedInSighting: false });
+        this.state = 'SEARCH';
+        this.buildSearchQueue(map, game);
+        this.lastTargetLabel = 'Searching area';
+      }
+    } else if (this.state === 'SEARCH') {
+      this.updateSearch(dt, map, game);
+    } else if (this.state === 'PATROL') {
+      this.updatePatrol(dt, map, game);
+    }
+  }
+
+  buildSearchQueue(map, game) {
+    const origin = this.investigateTarget || { x: this.x, y: this.y };
+    const nearby = map.hidingSpots.filter(s => Math.hypot(s.px - origin.x, s.py - origin.y) <= CONFIG.hunter.searchRadius);
+    const pool = nearby.length ? nearby : map.hidingSpots;
+    const eps = game.hunterBrain.epsilon;
+    const scored = pool.map(s => ({
+      spot: s,
+      score: qGet(game.hunterBrain.spotPriority, s.id) + (game.hunterBrain.spotFound[s.id] ? 3 : 0) - Math.hypot(s.px - origin.x, s.py - origin.y) / 500 + Math.random() * eps * 4,
+    }));
+    scored.sort((a, b) => b.score - a.score);
+    this.searchQueue = scored.slice(0, CONFIG.hunter.searchMaxSpots).map(x => x.spot);
+    this.searchIdx = 0;
+    this.lingering = false;
+    if (this.searchQueue.length) {
+      const s0 = this.searchQueue[0];
+      this.goTo(map, s0.x, s0.y);
+    }
+  }
+
+  updateSearch(dt, map, game) {
+    if (!this.searchQueue.length) { this.state = 'PATROL'; return; }
+    const spot = this.searchQueue[this.searchIdx];
+    if (this.lingering) {
+      this.lingerTimer -= dt;
+      const c = map.tileCenter(spot.x, spot.y);
+      this.angle = lerpAngle(this.angle, Math.atan2(c.y - this.y, c.x - this.x), dt * 4);
+      if (this.lingerTimer <= 0) {
+        const found = this._lingerSnapshot && this._lingerSnapshot.some(id => {
+          const h = game.hiders.find(hh => hh.id === id);
+          return h && h.caught && h.caughtAtSpot === spot.id;
+        });
+        game.logEvent({ type: 'searchSpot', hunter: this.id, spotId: spot.id, zone: spot.zone, foundHider: !!found, t: game.simTime });
+        this.lingering = false;
+        this.searchIdx++;
+        if (this.searchIdx >= this.searchQueue.length) { this.state = 'PATROL'; this.searchQueue = []; }
+        else { const next = this.searchQueue[this.searchIdx]; this.goTo(map, next.x, next.y); }
+      }
+      return;
+    }
+    if (!this.hasPath()) {
+      this.lingering = true;
+      this.lingerTimer = CONFIG.hunter.searchLinger;
+      this._lingerSnapshot = game.hiders.filter(h => !h.caught).map(h => h.id);
+    }
+  }
+
+  updatePatrol(dt, map, game) {
+    if (this.hasPath()) return;
+    if (this._patrolWaitTimer > 0) {
+      this._patrolWaitTimer -= dt;
+      this.angle += Math.sin(game.simTime * 1.3 + this.x) * 0.8 * dt;
+      return;
+    }
+    if (this._patrolArrived) { this._patrolWaitTimer = CONFIG.hunter.patrolDwell; this._patrolArrived = false; return; }
+    const partner = game.hunters.find(o => o.id !== this.id);
+    const partnerZone = partner ? map.zoneOfPixel(partner.x, partner.y) : -1;
+    const zone = pickEpsilonGreedy(ALL_ZONES, z => qGet(game.hunterBrain.zoneValue, z) + Math.min(6, (game.simTime - (game.zoneLastVisited[z] || 0)) * 0.03) - (z === partnerZone ? 3 : 0), game.hunterBrain.epsilon);
+    const spotsInZone = map.hidingSpots.filter(s => s.zone === zone);
+    let tile = null, label = 'Patrol ' + zoneLabel(zone);
+    if (spotsInZone.length && Math.random() < 0.85) {
+      const spot = pickEpsilonGreedy(spotsInZone, s => qGet(game.hunterBrain.spotPriority, s.id), game.hunterBrain.epsilon);
+      if (spot) { tile = spot; label = 'Checking ' + spot.id; }
+    }
+    if (!tile) tile = map.randomFloorTileInZone(zone);
+    if (tile) {
+      this.goTo(map, tile.x, tile.y);
+      this.lastTargetLabel = label;
+      game.hunterBrain.zoneVisits[zone] = (game.hunterBrain.zoneVisits[zone] || 0) + 1;
+      game.zoneLastVisited[zone] = game.simTime;
+    }
+  }
+
+  update(dt, map, game) {
+    const wasPathing = this.hasPath();
+    const spd = this.state === 'CHASE' ? this.speed * CONFIG.hunter.chaseSpeedMult : this.speed;
+    this.stepAlongPath(dt, spd);
+    if (wasPathing && !this.hasPath() && this.state === 'PATROL') this._patrolArrived = true;
+  }
+}
+
+/* ======================= HIDER ======================= */
+class Hider extends Entity {
+  constructor(id, x, y, color) {
+    super(id, x, y, CONFIG.hider.speed);
+    this.color = color;
+    this.resetForRound(x, y);
+  }
+  resetForRound(x, y) {
+    this.x = x; this.y = y; this.path = null; this.pathIdx = 0; this.destPx = null;
+    this.caught = false; this.caughtAtSpot = null; this.currentSpotId = null;
+    this.visitedSpots = new Set(); this.lastFleeTime = -999; this.state = 'SEEKING_SPOT';
+    this.lastEval = []; this.nearestThreat = null;
+  }
+
+  chooseSpot(map, game, excludeId) {
+    const b = game.hiderBrain;
+    const taken = new Set(game.hiders.filter(o => o !== this && !o.caught && o.currentSpotId).map(o => o.currentSpotId));
+    const scored = map.hidingSpots.filter(s => s.id !== excludeId && !taken.has(s.id)).map(s => {
+      const learn = qGet(b.spotValue, s.id);
+      const danger = qGet(b.spotDanger, s.id);
+      const zoneHeat = qGet(b.zoneHunterSightings, s.zone);
+      const roundHeat = game.roundLocalHeat[s.zone] || 0;
+      const travel = Math.hypot(s.px - this.x, s.py - this.y);
+      const score = learn * 1.4 - danger * 2.2 - zoneHeat * 1.1 - roundHeat * 1.6
+        - s.openness * 3.2 + s.escapeRoutes * 0.55 - s.approachDirections * 0.4
+        - Math.min(2, travel / 700);
+      return { spot: s, score, learn, danger, zoneHeat, roundHeat, openness: s.openness, escape: s.escapeRoutes, approach: s.approachDirections, travel };
+    });
+    scored.sort((a, c) => c.score - a.score);
+    this.lastEval = scored;
+    let pick;
+    if (Math.random() < b.epsilon) pick = choice(scored.slice(0, Math.min(6, scored.length))).spot;
+    else pick = scored[0].spot;
+    return pick;
+  }
+
+  settleAt(map, game, spot, reason, nextState) {
+    if (this.currentSpotId && this.currentSpotId !== spot.id) {
+      game.logEvent({ type: 'relocate', hider: this.id, from: this.currentSpotId, to: spot.id, reason, zone: spot.zone, t: game.simTime });
+    }
+    this.currentSpotId = spot.id;
+    this.visitedSpots.add(spot.id);
+    game.logEvent({ type: 'spotChosen', hider: this.id, spotId: spot.id, zone: spot.zone, t: game.simTime });
+    this.goTo(map, spot.x, spot.y);
+    this.state = nextState || 'SEEKING_SPOT';
+  }
+
+  perceive(dt, hunters, map, game) {
+    this.nearestThreat = null;
+    let minDist = Infinity;
+    for (const hunter of hunters) {
+      const d = Math.hypot(hunter.x - this.x, hunter.y - this.y);
+      if (d > CONFIG.hider.perceptionRadius) continue;
+      const los = map.raycastClear(this.x, this.y, hunter.x, hunter.y);
+      if (!los) continue;
+      const zone = map.zoneOfPixel(hunter.x, hunter.y);
+      game.roundLocalHeat[zone] = (game.roundLocalHeat[zone] || 0) + dt * 2;
+      if (d < minDist) { minDist = d; this.nearestThreat = { hunter, dist: d, los: true }; }
+      if (d < CONFIG.hider.perceptionRadius * 0.65) {
+        game.logEvent({ type: 'nearMiss', hider: this.id, hunter: hunter.id, dist: d, zone, t: game.simTime });
+      }
+    }
+  }
+
+  decide(dt, map, game) {
+    if (this.state === 'HIDDEN') {
+      this.angle += Math.sin(game.simTime * 0.7 + this.x) * 0.002;
+      const threat = this.nearestThreat;
+      const canFlee = (game.simTime - this.lastFleeTime) > CONFIG.hider.fleeCooldown;
+      if (threat && threat.dist < CONFIG.hider.dangerRadius && canFlee) {
+        this.lastFleeTime = game.simTime;
+        const predicted = {
+          x: threat.hunter.x + Math.cos(threat.hunter.angle) * threat.hunter.speed * CONFIG.hider.predictHorizon,
+          y: threat.hunter.y + Math.sin(threat.hunter.angle) * threat.hunter.speed * CONFIG.hider.predictHorizon,
+        };
+        let best = null, bestScore = -Infinity;
+        for (const s of map.hidingSpots) {
+          if (s.id === this.currentSpotId) continue;
+          const distFromPredicted = Math.hypot(s.px - predicted.x, s.py - predicted.y);
+          const distFromMe = Math.hypot(s.px - this.x, s.py - this.y);
+          const danger = qGet(game.hiderBrain.spotDanger, s.id);
+          const score = distFromPredicted * 1.0 - distFromMe * 0.35 - danger * 40 + s.escapeRoutes * 10;
+          if (score > bestScore) { bestScore = score; best = s; }
+        }
+        if (best) this.settleAt(map, game, best, 'fled hunter', 'FLEEING');
+      }
+    }
+  }
+
+  update(dt, map, game) {
+    const wasPathing = this.hasPath();
+    this.stepAlongPath(dt);
+    if (wasPathing && !this.hasPath() && (this.state === 'SEEKING_SPOT' || this.state === 'FLEEING')) this.state = 'HIDDEN';
+  }
+}
+
+/* ======================= GAME ======================= */
+class Game {
+  constructor() {
+    this.map = new GameMap();
+    this.hunterBrain = loadJSON(BRAIN_KEYS.hunter, defaultHunterBrain);
+    this.hiderBrain = loadJSON(BRAIN_KEYS.hider, defaultHiderBrain);
+    const ms = loadJSON(BRAIN_KEYS.match, () => ({ roundNum: 0, score: { hunters: 0, hiders: 0 }, history: [] }));
+    this.roundNum = ms.roundNum || 0;
+    this.score = ms.score || { hunters: 0, hiders: 0 };
+    this.history = ms.history || [];
+    this.simTime = 0;
+    this.phase = 'idle';
+    this.roundTimer = 0; this.phaseTimer = 0; this.endBannerTimer = 0;
+    this.winner = null;
+    this.blackboard = { sightings: [] };
+    this.roundLocalHeat = {};
+    this.roundLog = [];
+    this.rewardFeed = [];
+    this.zoneLastVisited = {};
+    this.fastForwarding = false;
+
+    const hs = this.map.spawn.hunters.map(t => this.map.tileCenter(t.x, t.y));
+    const ss = this.map.spawn.hiders.map(t => this.map.tileCenter(t.x, t.y));
+    this.hunters = [new Hunter('H1', hs[0].x, hs[0].y, '#ff5c5c'), new Hunter('H2', hs[1].x, hs[1].y, '#ff9d4d')];
+    this.hiders = [new Hider('S1', ss[0].x, ss[0].y, '#43c6ff'), new Hider('S2', ss[1].x, ss[1].y, '#7c8bff')];
+    this.homeHunterPos = hs;
+    this.homeHiderPos = ss;
+  }
+
+  startRound() {
+    this.roundNum++;
+    this.blackboard = { sightings: [] };
+    this.roundLocalHeat = {};
+    this.roundLog = [];
+    for (const z of ALL_ZONES) this.roundLocalHeat[z] = 0;
+
+    this.hunters.forEach((h, i) => { const p = this.homeHunterPos[i]; h.resetForRound(p.x + rand(-6, 6), p.y + rand(-6, 6)); });
+    this.hiders.forEach((s, i) => {
+      const p = this.homeHiderPos[i];
+      s.resetForRound(p.x, p.y);
+      const spot = s.chooseSpot(this.map, this, null);
+      s.settleAt(this.map, this, spot, 'round start', 'SEEKING_SPOT');
+    });
+
+    this.phase = 'hiding';
+    this.phaseTimer = CONFIG.round.hideDuration;
+    this.roundTimer = CONFIG.round.seekDuration;
+    this.winner = null;
+    this.pushFeed('round', `Round ${this.roundNum} begins — hiders scatter…`, 'neutral');
+  }
+
+  broadcast(msg) {
+    this.blackboard.sightings.push(msg);
+    this.blackboard.sightings = this.blackboard.sightings.filter(s => this.simTime - s.t < 10);
+  }
+
+  logEvent(evt) {
+    this.roundLog.push(evt);
+    if (evt.type === 'sighting') {
+      for (let i = this.roundLog.length - 2; i >= 0; i--) {
+        const e = this.roundLog[i];
+        if (e.t < evt.t - 6) break;
+        if (e.type === 'investigateArrive' && e.hunter === evt.hunter && !e.resultedInSighting) { e.resultedInSighting = true; break; }
+      }
+    }
+  }
+
+  pushFeed(kind, text, cls) {
+    this.rewardFeed.unshift({ kind, text, cls: cls || 'neutral', round: this.roundNum });
+    if (this.rewardFeed.length > 150) this.rewardFeed.length = 150;
+  }
+
+  catchHider(hunter, hider) {
+    hider.caught = true;
+    hider.caughtAtSpot = hider.currentSpotId;
+    const zone = this.map.zoneOfPixel(hider.x, hider.y);
+    this.logEvent({ type: 'catch', hunter: hunter.id, hider: hider.id, x: hider.x, y: hider.y, zone, spotId: hider.caughtAtSpot, t: this.simTime });
+    this.pushFeed('catch', `${hunter.id} caught ${hider.id}!`, 'bad');
+    if (hunter.chaseId === hider.id) hunter.chaseId = null;
+  }
+
+  tick(dt) {
+    if (this.phase === 'idle' || this.phase === 'matchOver') return;
+    this.simTime += dt;
+
+    if (this.phase === 'hiding') {
+      this.phaseTimer -= dt;
+      for (const s of this.hiders) s.update(dt, this.map, this);
+      if (this.phaseTimer <= 0) { this.phase = 'seeking'; this.pushFeed('round', 'Seek phase! Hunters move out.', 'neutral'); }
+      return;
+    }
+
+    if (this.phase === 'seeking') {
+      this.roundTimer -= dt;
+      for (const h of this.hunters) {
+        h.perceive(dt, this.hiders.filter(s => !s.caught), this.map, this);
+        h.decideState(dt, this.map, this);
+        h.update(dt, this.map, this);
+        for (const s of this.hiders) {
+          if (!s.caught && (h.meters.get(s.id) || 0) >= CONFIG.hunter.catchThreshold) this.catchHider(h, s);
+        }
+      }
+      for (const s of this.hiders) {
+        if (s.caught) continue;
+        s.perceive(dt, this.hunters, this.map, this);
+        s.decide(dt, this.map, this);
+        s.update(dt, this.map, this);
+      }
+      this.blackboard.sightings = this.blackboard.sightings.filter(b => this.simTime - b.t < 10);
+
+      if (this.hiders.every(s => s.caught)) this.endRound('hunters');
+      else if (this.roundTimer <= 0) this.endRound('hiders');
+      return;
+    }
+
+    if (this.phase === 'ended') {
+      this.endBannerTimer -= dt;
+      if (this.endBannerTimer <= 0) {
+        if (this.roundNum >= CONFIG.totalRounds) this.phase = 'matchOver';
+        else this.startRound();
+      }
+    }
+  }
+
+  endRound(winner) {
+    this.winner = winner;
+    this.phase = 'ended';
+    this.endBannerTimer = CONFIG.round.endBanner;
+    if (winner === 'hunters') this.score.hunters++; else this.score.hiders++;
+    this.applyHiderLearning();
+    this.applyHunterLearning();
+    this.hunterBrain.epsilon = Math.max(CONFIG.learning.epsilonMin, this.hunterBrain.epsilon * CONFIG.learning.epsilonDecayPerRound);
+    this.hiderBrain.epsilon = Math.max(CONFIG.learning.epsilonMin, this.hiderBrain.epsilon * CONFIG.learning.epsilonDecayPerRound);
+    this.history.push({ round: this.roundNum, winner });
+    if (this.history.length > 300) this.history.shift();
+    this.persist();
+    this.pushFeed('round', `Round ${this.roundNum}: ${winner === 'hunters' ? 'Hunters' : 'Hiders'} win!`, winner === 'hunters' ? 'bad' : 'good');
+  }
+
+  applyHiderLearning() {
+    const cfg = CONFIG.rewards, b = this.hiderBrain, alpha = CONFIG.learning.alpha;
+    for (const hider of this.hiders) {
+      const spots = [...hider.visitedSpots];
+      for (const spotId of spots) {
+        const spot = this.map.hidingSpots.find(sp => sp.id === spotId);
+        if (!spot) continue;
+        let r = 0;
+        const breakLos = this.roundLog.filter(e => e.type === 'losBreak' && e.hider === hider.id && e.zone === spot.zone).length;
+        r += cfg.hiderBreakLOS * Math.min(2, breakLos);
+        const nearMiss = this.roundLog.filter(e => e.type === 'nearMiss' && e.hider === hider.id && e.zone === spot.zone).length;
+        r += cfg.hiderAvoidNear * Math.min(4, nearMiss);
+        const wasSearched = this.roundLog.some(e => e.type === 'searchSpot' && e.spotId === spotId);
+        const wasSighted = this.roundLog.some(e => e.type === 'sighting' && e.hider === hider.id && e.zone === spot.zone);
+        if (!wasSearched && !wasSighted) r += cfg.hiderReachSafe;
+        if (hider.caught && hider.caughtAtSpot === spotId) {
+          r += cfg.hiderCaught;
+          b.spotDanger[spotId] = Math.min(6, qGet(b.spotDanger, spotId) + 1.5);
+        } else if (!hider.caught) {
+          r += cfg.hiderSurvive / spots.length;
+        }
+        qUpdate(b.spotValue, spotId, r, alpha);
+        b.spotUses[spotId] = (b.spotUses[spotId] || 0) + 1;
+        if (Math.abs(r) >= 0.05) this.pushFeed('reward', `${hider.id} ${r >= 0 ? '+' : ''}${r.toFixed(1)} using ${spotId}`, r >= 0 ? 'good' : 'bad');
+      }
+      if (hider.caught && !hider.caughtAtSpot) {
+        const zone = this.map.zoneOfPixel(hider.x, hider.y);
+        b.zoneHunterSightings[zone] = qGet(b.zoneHunterSightings, zone) + 2;
+      }
+    }
+    for (const id in b.spotDanger) b.spotDanger[id] *= CONFIG.learning.dangerDecay;
+    for (const z in b.zoneHunterSightings) b.zoneHunterSightings[z] *= CONFIG.learning.heatDecay;
+    for (const z of ALL_ZONES) {
+      const add = (this.roundLocalHeat[z] || 0) * 0.12;
+      if (add) b.zoneHunterSightings[z] = (b.zoneHunterSightings[z] || 0) + add;
+    }
+  }
+
+  applyHunterLearning() {
+    const cfg = CONFIG.rewards, b = this.hunterBrain, alpha = CONFIG.learning.alpha;
+    for (const e of this.roundLog) {
+      if (e.type === 'catch') {
+        qUpdate(b.zoneValue, e.zone, cfg.hunterFind, alpha);
+        if (e.spotId) {
+          qUpdate(b.spotPriority, e.spotId, cfg.hunterFind, alpha);
+          if (!b.spotFound[e.spotId]) { b.spotFound[e.spotId] = 1; qUpdate(b.zoneValue, e.zone, cfg.hunterDiscoverArea, alpha); }
+          else b.spotFound[e.spotId]++;
+        }
+        this.pushFeed('reward', `${e.hunter} +${cfg.hunterFind} found ${e.hider}`, 'good');
+      } else if (e.type === 'investigateArrive' && e.resultedInSighting) {
+        qUpdate(b.zoneValue, e.zone, cfg.hunterInvestigateHit, alpha);
+        this.pushFeed('reward', `${e.hunter} +${cfg.hunterInvestigateHit} investigate paid off`, 'good');
+      } else if (e.type === 'searchSpot') {
+        if (e.foundHider) {
+          qUpdate(b.spotPriority, e.spotId, Math.abs(cfg.hunterFind) * 0.5, alpha);
+        } else {
+          qUpdate(b.zoneValue, e.zone, cfg.hunterWaste, alpha);
+          qUpdate(b.spotPriority, e.spotId, cfg.hunterWaste * 0.5, alpha);
+          if (cfg.hunterWaste) this.pushFeed('reward', `${e.hunter} ${cfg.hunterWaste} empty search at ${e.spotId}`, 'bad');
+        }
+      }
+    }
+    for (const z in b.zoneValue) b.zoneValue[z] *= 0.985;
+    for (const id in b.spotPriority) b.spotPriority[id] *= 0.985;
+  }
+
+  persist() {
+    saveJSON(BRAIN_KEYS.hunter, this.hunterBrain);
+    saveJSON(BRAIN_KEYS.hider, this.hiderBrain);
+    saveJSON(BRAIN_KEYS.match, { roundNum: this.roundNum, score: this.score, history: this.history });
+  }
+
+  resetLearning() {
+    localStorage.removeItem(BRAIN_KEYS.hunter);
+    localStorage.removeItem(BRAIN_KEYS.hider);
+    localStorage.removeItem(BRAIN_KEYS.match);
+    this.hunterBrain = defaultHunterBrain();
+    this.hiderBrain = defaultHiderBrain();
+    this.roundNum = 0; this.score = { hunters: 0, hiders: 0 }; this.history = [];
+    this.zoneLastVisited = {};
+    this.pushFeed('round', 'Learning reset. Starting fresh.', 'neutral');
+  }
+
+  fastForward(totalRounds) {
+    if (this.fastForwarding) return;
+    this.fastForwarding = true;
+    UI.setFastForwarding(true);
+    if (this.phase === 'idle' || this.phase === 'matchOver') { CONFIG.totalRounds = Math.max(CONFIG.totalRounds, this.roundNum + totalRounds); this.startRound(); }
+    const targetRound = this.roundNum + totalRounds;
+    CONFIG.totalRounds = Math.max(CONFIG.totalRounds, targetRound);
+    const chunkTicks = 4000;
+    const stepChunk = () => {
+      let i = 0;
+      while (i < chunkTicks && this.roundNum < targetRound && this.phase !== 'matchOver') { this.tick(1 / 20); i++; }
+      UI.refreshAll(this);
+      if (this.roundNum < targetRound && this.phase !== 'matchOver') setTimeout(stepChunk, 0);
+      else { this.fastForwarding = false; UI.setFastForwarding(false); }
+    };
+    stepChunk();
+  }
+}
+
+/* ======================= RENDER ======================= */
+const TEAM_STATE_COLOR = {
+  PATROL: '#8aa0b8', INVESTIGATE: '#ffb020', CHASE: '#ff5c5c', SEARCH: '#e0a339', COORDINATE: '#43c6ff',
+  SEEKING_SPOT: '#8aa0b8', HIDDEN: '#43c6ff', FLEEING: '#ff9d4d',
+};
+
+function drawMap(ctx, map) {
+  for (let y = 0; y < map.rows; y++) {
+    for (let x = 0; x < map.cols; x++) {
+      const px = x * TILE, py = y * TILE;
+      if (map.isSolid(x, y)) {
+        ctx.fillStyle = '#2a3441';
+        ctx.fillRect(px, py, TILE, TILE);
+        ctx.fillStyle = 'rgba(255,255,255,0.04)';
+        ctx.fillRect(px, py, TILE, 3);
+        ctx.fillStyle = 'rgba(0,0,0,0.18)';
+        ctx.fillRect(px, py + TILE - 3, TILE, 3);
+      } else {
+        ctx.fillStyle = ((x + y) % 2 === 0) ? '#121a23' : '#0f161e';
+        ctx.fillRect(px, py, TILE, TILE);
+      }
+    }
+  }
+}
+
+function drawZoneHeat(ctx, game) {
+  const ub = game.hunterBrain;
+  let max = 0.01;
+  for (const z of ALL_ZONES) max = Math.max(max, Math.abs(qGet(ub.zoneValue, z)));
+  for (const z of ALL_ZONES) {
+    const v = qGet(ub.zoneValue, z);
+    const zx = z % game.map.zoneCols, zy = Math.floor(z / game.map.zoneCols);
+    const px = zx * game.map.zoneW * TILE, py = zy * game.map.zoneH * TILE;
+    const w = game.map.zoneW * TILE, h = game.map.zoneH * TILE;
+    if (Math.abs(v) >= 0.05) {
+      const alpha = Math.min(0.22, Math.abs(v) / max * 0.22);
+      ctx.fillStyle = v > 0 ? `rgba(255,92,92,${alpha})` : `rgba(67,198,255,${alpha * 0.6})`;
+      ctx.fillRect(px, py, w, h);
+    }
+    ctx.strokeStyle = 'rgba(255,255,255,0.05)';
+    ctx.strokeRect(px, py, w, h);
+    ctx.font = '10px monospace';
+    ctx.fillStyle = 'rgba(255,255,255,0.18)';
+    ctx.fillText(zoneLabel(z), px + 4, py + 12);
+  }
+}
+
+function drawHidingSpots(ctx, game) {
+  const hb = game.hiderBrain;
+  for (const s of game.map.hidingSpots) {
+    const v = qGet(hb.spotValue, s.id);
+    const uses = hb.spotUses[s.id] || 0;
+    if (debugMode) {
+      const safe = v >= 0;
+      ctx.beginPath();
+      ctx.arc(s.px, s.py, 9 + Math.min(10, uses), 0, Math.PI * 2);
+      ctx.strokeStyle = safe ? 'rgba(53,208,127,0.75)' : 'rgba(255,92,92,0.75)';
+      ctx.lineWidth = 2;
+      ctx.setLineDash([4, 3]);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = 'rgba(230,238,246,0.55)';
+      ctx.font = '9px monospace';
+      ctx.fillText(s.id, s.px - 9, s.py - 12);
+    } else {
+      ctx.beginPath();
+      ctx.arc(s.px, s.py, 4, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(139,92,246,0.35)';
+      ctx.fill();
+    }
+  }
+}
+
+function drawHunterDebug(ctx, h, game) {
+  const half = (CONFIG.hunter.fovAngle * Math.PI / 180) / 2;
+  const stateColor = h.state === 'CHASE' ? 'rgba(255,92,92,0.20)' : (h.state === 'SEARCH' || h.state === 'INVESTIGATE') ? 'rgba(255,176,32,0.16)' : 'rgba(138,160,184,0.12)';
+  ctx.beginPath();
+  ctx.moveTo(h.x, h.y);
+  ctx.arc(h.x, h.y, CONFIG.hunter.viewDist, h.angle - half, h.angle + half);
+  ctx.closePath();
+  ctx.fillStyle = stateColor;
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(255,255,255,0.10)';
+  ctx.stroke();
+
+  for (const id of h.visibleIds) {
+    const hider = game.hiders.find(s => s.id === id);
+    if (!hider) continue;
+    ctx.beginPath();
+    ctx.moveTo(h.x, h.y);
+    ctx.lineTo(hider.x, hider.y);
+    ctx.strokeStyle = 'rgba(255,92,92,0.85)';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+  }
+  for (const [id, ls] of h.lastSeen) {
+    if (h.visibleIds.has(id)) continue;
+    const age = game.simTime - ls.time;
+    if (age > 10) continue;
+    const alpha = Math.max(0, 1 - age / 10);
+    ctx.beginPath();
+    ctx.moveTo(ls.x - 7, ls.y - 7); ctx.lineTo(ls.x + 7, ls.y + 7);
+    ctx.moveTo(ls.x + 7, ls.y - 7); ctx.lineTo(ls.x - 7, ls.y + 7);
+    ctx.strokeStyle = `rgba(255,176,32,${alpha})`;
+    ctx.lineWidth = 2;
+    ctx.stroke();
+  }
+  if (h.hasPath() && h.destPx) {
+    ctx.beginPath();
+    ctx.arc(h.destPx.x, h.destPx.y, 5, 0, Math.PI * 2);
+    ctx.strokeStyle = 'rgba(255,255,255,0.5)';
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(h.x, h.y); ctx.lineTo(h.destPx.x, h.destPx.y);
+    ctx.strokeStyle = 'rgba(255,255,255,0.12)';
+    ctx.setLineDash([3, 4]);
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+  if (h.state === 'COORDINATE' && h.coordTarget) {
+    const other = game.hunters.find(o => o.id !== h.id);
+    if (other) {
+      ctx.beginPath();
+      ctx.moveTo(h.x, h.y); ctx.lineTo(other.x, other.y);
+      ctx.strokeStyle = 'rgba(67,198,255,0.6)';
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([2, 3]);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+  }
+}
+
+function drawEntityBody(ctx, e, color, ringColor) {
+  ctx.beginPath();
+  ctx.arc(e.x, e.y, 11, 0, Math.PI * 2);
+  ctx.fillStyle = color;
+  ctx.fill();
+  ctx.lineWidth = 2.5;
+  ctx.strokeStyle = ringColor;
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(e.x + Math.cos(e.angle) * 14, e.y + Math.sin(e.angle) * 14);
+  ctx.lineTo(e.x + Math.cos(e.angle - 2.5) * 7, e.y + Math.sin(e.angle - 2.5) * 7);
+  ctx.lineTo(e.x + Math.cos(e.angle + 2.5) * 7, e.y + Math.sin(e.angle + 2.5) * 7);
+  ctx.closePath();
+  ctx.fillStyle = ringColor;
+  ctx.fill();
+}
+
+function drawLabel(ctx, e, text) {
+  ctx.font = '10px monospace';
+  const w = ctx.measureText(text).width + 8;
+  ctx.fillStyle = 'rgba(10,14,18,0.75)';
+  ctx.fillRect(e.x - w / 2, e.y - 30, w, 14);
+  ctx.fillStyle = '#d7e2ee';
+  ctx.textAlign = 'center';
+  ctx.fillText(text, e.x, e.y - 20);
+  ctx.textAlign = 'left';
+}
+
+function drawHunter(ctx, h) {
+  const ring = TEAM_STATE_COLOR[h.state] || '#8aa0b8';
+  drawEntityBody(ctx, h, h.color, ring);
+  let bestM = 0;
+  for (const m of h.meters.values()) bestM = Math.max(bestM, m);
+  if (bestM > 2) {
+    ctx.fillStyle = 'rgba(10,14,18,0.7)';
+    ctx.fillRect(h.x - 16, h.y - 40, 32, 5);
+    ctx.fillStyle = bestM >= CONFIG.hunter.catchThreshold * 0.85 ? '#ff5c5c' : bestM >= CONFIG.hunter.noticeThreshold ? '#ffb020' : '#35d07f';
+    ctx.fillRect(h.x - 16, h.y - 40, 32 * Math.min(1, bestM / 100), 5);
+  }
+  if (debugMode) drawLabel(ctx, h, h.state);
+}
+
+function drawHider(ctx, s) {
+  if (s.caught) return;
+  const ring = TEAM_STATE_COLOR[s.state] || '#8aa0b8';
+  drawEntityBody(ctx, s, s.color, ring);
+  if (debugMode) drawLabel(ctx, s, s.state + (s.currentSpotId ? (' · ' + s.currentSpotId) : ''));
+}
+
+function render(ctx, game) {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  drawMap(ctx, game.map);
+  if (debugMode) drawZoneHeat(ctx, game);
+  drawHidingSpots(ctx, game);
+  if (debugMode) for (const h of game.hunters) drawHunterDebug(ctx, h, game);
+  for (const s of game.hiders) drawHider(ctx, s);
+  for (const h of game.hunters) drawHunter(ctx, h);
+}
+
+/* ======================= UI ======================= */
+const UI = {
+  init(game) {
+    document.querySelectorAll('.tab').forEach(btn => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('.tab').forEach(b => b.classList.remove('active'));
+        document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+        btn.classList.add('active');
+        document.getElementById('panel-' + btn.dataset.tab).classList.add('active');
+      });
+    });
+    document.getElementById('btnPause').addEventListener('click', () => {
+      if (game.phase === 'matchOver') {
+        CONFIG.totalRounds += 10;
+        game.startRound();
+        paused = false;
+        document.getElementById('btnPause').textContent = '⏸ Pause';
+        return;
+      }
+      paused = !paused;
+      document.getElementById('btnPause').textContent = paused ? '▶ Resume' : '⏸ Pause';
+    });
+    document.getElementById('selSpeed').addEventListener('change', e => { CONFIG.simSpeed = parseInt(e.target.value, 10); });
+    document.getElementById('chkDebug').addEventListener('change', e => { debugMode = e.target.checked; });
+    document.getElementById('btnFF').addEventListener('click', () => {
+      const n = Math.max(1, Math.min(200, parseInt(document.getElementById('numFF').value, 10) || 10));
+      game.fastForward(n);
+    });
+    document.getElementById('btnResetMatch').addEventListener('click', () => {
+      if (confirm('Reset round counter and score? Learned knowledge is kept.')) {
+        game.roundNum = 0; game.score = { hunters: 0, hiders: 0 }; game.history = [];
+        game.persist();
+        game.startRound();
+      }
+    });
+    document.getElementById('btnResetLearning').addEventListener('click', () => {
+      if (confirm('This wipes everything both AIs have learned so far. Continue?')) {
+        game.resetLearning();
+        game.startRound();
+      }
+    });
+    this.buildConfigPanel();
+    this.refreshAll(game);
+  },
+
+  setFastForwarding(on) {
+    document.getElementById('ffOverlay').classList.toggle('hidden', !on);
+    document.getElementById('btnFF').disabled = on;
+  },
+
+  refreshAll(game) {
+    refreshHUD(game);
+    this.renderAgents(game);
+    this.renderRewards(game);
+    this.renderKnowledge(game);
+    this.renderHistory(game);
+  },
+
+  renderAgents(game) {
+    const el = document.getElementById('panel-agents');
+    let html = '';
+    for (const h of game.hunters) {
+      let bestId = null, bestM = 0;
+      for (const [id, m] of h.meters) if (m > bestM) { bestM = m; bestId = id; }
+      const pct = Math.min(100, bestM);
+      const fillColor = pct >= CONFIG.hunter.catchThreshold * 0.85 ? 'var(--bad)' : pct >= CONFIG.hunter.noticeThreshold ? 'var(--accent)' : 'var(--good)';
+      html += `<div class="agent-card hunter">
+        <div class="agent-head"><span class="dot" style="background:${h.color}"></span><b>${h.id}</b><span class="state-badge state-${h.state}">${h.state}</span></div>
+        <div class="agent-line">${escapeHtml(h.lastTargetLabel || '')}</div>
+        <div class="meter"><div class="meter-fill" style="width:${pct}%;background:${fillColor}"></div></div>
+        <div class="agent-sub">${bestId ? ('watching ' + bestId + ' · ' + pct.toFixed(0) + '%') : 'no contact'}</div>
+      </div>`;
+    }
+    for (const s of game.hiders) {
+      const top = s.lastEval.slice(0, 3);
+      const chosen = s.lastEval.find(t => t.spot.id === s.currentSpotId);
+      html += `<div class="agent-card hider ${s.caught ? 'caught' : ''}">
+        <div class="agent-head"><span class="dot" style="background:${s.color}"></span><b>${s.id}</b><span class="state-badge state-${s.caught ? 'CAUGHT' : s.state}">${s.caught ? 'CAUGHT' : s.state}</span></div>
+        <div class="agent-line">${s.caught ? 'out of the round' : ('at ' + (s.currentSpotId || '—'))}</div>
+        <div class="eval-list">${top.map(t => `<div class="eval-row ${t.spot.id === s.currentSpotId ? 'chosen' : ''}"><span>${t.spot.id}</span><span>${t.score.toFixed(2)}</span></div>`).join('')}</div>
+        ${chosen ? `<div class="eval-chips">
+          <span class="chip">learn ${chosen.learn.toFixed(1)}</span>
+          <span class="chip">danger ${chosen.danger.toFixed(1)}</span>
+          <span class="chip">open ${chosen.openness.toFixed(2)}</span>
+          <span class="chip">escape ${chosen.escape}</span>
+          <span class="chip">approach ${chosen.approach}</span>
+        </div>` : ''}
+      </div>`;
+    }
+    el.innerHTML = html;
+  },
+
+  renderRewards(game) {
+    const el = document.getElementById('rewardFeed');
+    el.innerHTML = game.rewardFeed.slice(0, 80).map(f =>
+      `<div class="feed-row ${f.cls}"><span class="feed-icon">${feedIcon(f.kind)}</span><span class="feed-text">${escapeHtml(f.text)}</span><span class="feed-round">R${f.round}</span></div>`
+    ).join('') || '<div class="dim">No events yet.</div>';
+  },
+
+  renderKnowledge(game) {
+    const el = document.getElementById('panel-knowledge');
+    const hb = game.hiderBrain, ub = game.hunterBrain;
+    const spotRows = game.map.hidingSpots.slice().sort((a, b) => qGet(hb.spotValue, b.id) - qGet(hb.spotValue, a.id))
+      .map(s => `<tr><td>${s.id}</td><td class="num">${qGet(hb.spotValue, s.id).toFixed(2)}</td><td class="num">${qGet(hb.spotDanger, s.id).toFixed(2)}</td><td class="num">${hb.spotUses[s.id] || 0}</td></tr>`).join('');
+    const zoneRows = ALL_ZONES.slice().sort((a, b) => qGet(ub.zoneValue, b) - qGet(ub.zoneValue, a))
+      .map(z => `<tr><td>${zoneLabel(z)}</td><td class="num">${qGet(ub.zoneValue, z).toFixed(2)}</td><td class="num">${ub.zoneVisits[z] || 0}</td></tr>`).join('');
+    el.innerHTML = `
+      <div class="know-block">
+        <div class="know-title">Hider memory <span class="eps">ε=${hb.epsilon.toFixed(2)}</span></div>
+        <table class="ktable"><thead><tr><th>Spot</th><th>Value</th><th>Danger</th><th>Uses</th></tr></thead><tbody>${spotRows}</tbody></table>
+      </div>
+      <div class="know-block">
+        <div class="know-title">Hunter memory <span class="eps">ε=${ub.epsilon.toFixed(2)}</span></div>
+        <table class="ktable"><thead><tr><th>Zone</th><th>Value</th><th>Visits</th></tr></thead><tbody>${zoneRows}</tbody></table>
+      </div>`;
+  },
+
+  renderHistory(game) {
+    const el = document.getElementById('panel-history');
+    const last = game.history.slice(-80);
+    const strip = last.map(r => `<span class="hist-cell ${r.winner}" title="Round ${r.round}: ${r.winner} won"></span>`).join('');
+    const total = game.score.hunters + game.score.hiders;
+    el.innerHTML = `
+      <div class="hist-totals">
+        <div><span class="hunter-color">Hunters</span> ${game.score.hunters}</div>
+        <div><span class="hider-color">Hiders</span> ${game.score.hiders}</div>
+        <div class="dim">${total} rounds played all-time</div>
+      </div>
+      <div class="hist-strip">${strip || '<span class="dim">No rounds yet.</span>'}</div>`;
+  },
+
+  buildConfigPanel() {
+    const groups = [
+      ['Match', [['totalRounds', 'Rounds per match', 1], ['round.hideDuration', 'Hide phase (s)', 0.5], ['round.seekDuration', 'Seek phase (s)', 1]]],
+      ['Hunter senses', [['hunter.fovAngle', 'FOV angle (°)', 5], ['hunter.viewDist', 'View distance (px)', 10], ['hunter.speed', 'Move speed', 5], ['hunter.noticeThreshold', 'Notice threshold', 1]]],
+      ['Hider senses', [['hider.speed', 'Move speed', 5], ['hider.perceptionRadius', 'Perception radius', 10], ['hider.dangerRadius', 'Danger radius', 10]]],
+      ['Learning', [['learning.alpha', 'Learning rate α', 0.01], ['learning.epsilonStart', 'Start exploration ε', 0.01], ['learning.epsilonMin', 'Min exploration ε', 0.01], ['learning.epsilonDecayPerRound', 'ε decay / round', 0.001]]],
+      ['Hider rewards', [['rewards.hiderSurvive', 'Survive round', 1], ['rewards.hiderBreakLOS', 'Break line of sight', 1], ['rewards.hiderReachSafe', 'Reach safe spot', 1], ['rewards.hiderAvoidNear', 'Avoid nearby hunter', 1], ['rewards.hiderCaught', 'Caught (penalty)', 1]]],
+      ['Hunter rewards', [['rewards.hunterFind', 'Find a hider', 1], ['rewards.hunterInvestigateHit', 'Good investigate', 1], ['rewards.hunterDiscoverArea', 'Discover hiding area', 1], ['rewards.hunterWaste', 'Wasted search (penalty)', 1]]],
+    ];
+    const el = document.getElementById('panel-config');
+    el.innerHTML = groups.map(([title, fields]) => `
+      <div class="cfg-group">
+        <div class="cfg-title">${title}</div>
+        ${fields.map(([path, label, step]) => `<label class="cfg-row"><span>${label}</span><input type="number" step="${step}" data-cfg="${path}"></label>`).join('')}
+      </div>`).join('') + '<p class="dim cfg-note">Changes apply immediately. Learned knowledge is saved separately and unaffected by these tweaks.</p>';
+    document.querySelectorAll('[data-cfg]').forEach(input => {
+      const path = input.dataset.cfg.split('.');
+      let obj = CONFIG;
+      for (let i = 0; i < path.length - 1; i++) obj = obj[path[i]];
+      const key = path[path.length - 1];
+      input.value = obj[key];
+      input.addEventListener('change', () => {
+        const v = parseFloat(input.value);
+        if (!Number.isNaN(v)) obj[key] = v;
+      });
+    });
+  },
+};
+
+function refreshHUD(game) {
+  document.getElementById('hudRound').textContent = game.roundNum + '/' + CONFIG.totalRounds;
+  document.getElementById('hudPhase').textContent = { idle: '—', hiding: 'Hiding', seeking: 'Seeking', ended: 'Round Over', matchOver: 'Match Over' }[game.phase] || game.phase;
+  document.getElementById('hudTimer').textContent = formatTime(game.phase === 'hiding' ? game.phaseTimer : game.roundTimer);
+  document.getElementById('hudScoreHunters').textContent = game.score.hunters;
+  document.getElementById('hudScoreHiders').textContent = game.score.hiders;
+
+  const banner = document.getElementById('banner');
+  const btnPause = document.getElementById('btnPause');
+  if (game.phase === 'ended') {
+    banner.textContent = (game.winner === 'hunters' ? '🎯 Hunters win round ' : '🫥 Hiders win round ') + game.roundNum;
+    banner.className = 'banner show ' + game.winner;
+  } else if (game.phase === 'hiding') {
+    banner.textContent = 'Hide! ' + Math.ceil(game.phaseTimer) + 's';
+    banner.className = 'banner show hiding';
+  } else if (game.phase === 'matchOver') {
+    banner.textContent = `Match complete — Hunters ${game.score.hunters} : ${game.score.hiders} Hiders`;
+    banner.className = 'banner show matchover';
+    if (!game.fastForwarding) btnPause.textContent = '▶ Play 10 more rounds';
+  } else {
+    banner.className = 'banner hidden';
+  }
+  if (game.phase !== 'matchOver' && !game.fastForwarding) btnPause.textContent = paused ? '▶ Resume' : '⏸ Pause';
+}
+
+/* ======================= BOOT / LOOP ======================= */
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+let game, paused = false, debugMode = true;
+
+function loop() {
+  if (!game.fastForwarding && !paused) {
+    for (let i = 0; i < CONFIG.simSpeed; i++) game.tick(1 / 60);
+  }
+  render(ctx, game);
+  requestAnimationFrame(loop);
+}
+
+function boot() {
+  game = new Game();
+  window.HAS = { game, CONFIG, zoneLabel, ALL_ZONES };
+  UI.init(game);
+  game.startRound();
+  requestAnimationFrame(loop);
+  setInterval(() => UI.refreshAll(game), 250);
+}
+document.addEventListener('DOMContentLoaded', boot);
+</script>
+</body>
+</html>
