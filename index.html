@@ -1,0 +1,843 @@
+<!doctype html>
+<html lang="pl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>LIDAR Polska – mapa reliefu terenu</title>
+<style>
+:root{
+  --panel:#141b22f2; --panel-solid:#141b22; --fg:#e6edf3; --muted:#8b98a5;
+  --accent:#3fb6a8; --warn:#f0b429; --danger:#e5534b; --line:#2a3541; --field:#0d1318;
+}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{font:14px/1.4 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;background:#0b0f13;color:var(--fg);overflow:hidden}
+button,input,select{font:inherit;color:inherit}
+button{cursor:pointer}
+
+/* ---- mapa ---- */
+#map{position:fixed;inset:0;overflow:hidden;background:#0b0f13;touch-action:none;cursor:grab;outline:none;user-select:none;-webkit-user-select:none}
+#map.dragging{cursor:grabbing}
+#map.adding{cursor:crosshair}
+.layer{position:absolute;inset:0;overflow:hidden;isolation:isolate;pointer-events:none}
+.tile{position:absolute;left:0;top:0;width:256px;height:256px;transform-origin:0 0;will-change:transform;opacity:0;user-select:none;-webkit-user-drag:none}
+.tile.ok{opacity:1}
+.pane{position:absolute;inset:0;pointer-events:none;z-index:50}
+
+/* ---- znaczniki ---- */
+.mk{position:absolute;left:0;top:0;width:0;height:0;pointer-events:auto;cursor:pointer}
+.mk i{position:absolute;left:-11px;top:-27px;width:22px;height:22px;border-radius:50% 50% 50% 0;background:var(--accent);border:2px solid #fff;transform:rotate(-45deg);box-shadow:0 1px 4px #0009}
+.mk i::after{content:"";position:absolute;inset:5px;border-radius:50%;background:#fff}
+.popup{position:absolute;left:0;top:0;pointer-events:auto;width:220px;padding:10px;background:var(--panel-solid);border:1px solid var(--line);border-radius:8px;box-shadow:0 4px 18px #0009;translate:-50% calc(-100% - 36px)}
+.popup input{width:100%;padding:6px 8px;background:var(--field);border:1px solid var(--line);border-radius:6px}
+.popup .ll{margin:6px 0;color:var(--muted);font-size:12px;font-variant-numeric:tabular-nums}
+.popup button{width:100%}
+
+/* ---- suwak porównawczy ---- */
+.swipe{position:absolute;top:0;bottom:0;width:32px;margin-left:-16px;z-index:40;cursor:ew-resize;touch-action:none;pointer-events:auto;display:none}
+.swipe::before{content:"";position:absolute;left:15px;width:2px;top:0;bottom:0;background:#fff;box-shadow:0 0 4px #000a}
+.swipe b{position:absolute;left:2px;top:50%;width:28px;height:28px;margin-top:-14px;border-radius:50%;background:#fff;color:#111;display:grid;place-items:center;font-size:14px;box-shadow:0 1px 6px #000a}
+
+/* ---- panel ---- */
+#panel{position:fixed;left:12px;top:12px;bottom:12px;width:min(340px,calc(100vw - 24px));overflow:auto;padding:14px;background:var(--panel);border:1px solid var(--line);border-radius:12px;backdrop-filter:blur(6px);z-index:100;box-shadow:0 6px 24px #0008}
+#panel.hidden{display:none}
+#panel h1{margin:0;font-size:18px}
+#panel .sub{margin:2px 0 0;color:var(--muted);font-size:12px}
+#panel section{margin-top:14px;padding-top:12px;border-top:1px solid var(--line)}
+#panel h2{margin:0 0 6px;font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)}
+.opts label{display:flex;align-items:center;gap:8px;padding:4px 0;cursor:pointer}
+.opts label span{flex:1}
+.opts .x{border:0;background:none;color:var(--muted);padding:0 6px;font-size:16px}
+.opts .x:hover{color:var(--danger)}
+.status{margin:6px 0 0;font-size:12px;min-height:1em}
+.status.ok{color:var(--accent)} .status.warn{color:var(--warn)}
+.row{display:flex;align-items:center;gap:8px;margin-top:10px}
+.row input[type=range]{flex:1;accent-color:var(--accent)}
+.row output{width:3.2em;text-align:right;font-variant-numeric:tabular-nums}
+.seg{display:flex;margin-top:10px;border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.seg button{flex:1;padding:6px;background:none;border:0}
+.seg button+button{border-left:1px solid var(--line)}
+.seg button.on{background:var(--accent);color:#06201c;font-weight:600}
+.btns{display:flex;flex-wrap:wrap;gap:6px}
+.btns button,.popup button,#cwForm button{padding:6px 10px;background:#1e2832;border:1px solid var(--line);border-radius:6px}
+.btns button:hover:not(:disabled),.popup button:hover,#cwForm button:hover{border-color:var(--accent)}
+.btns button:disabled{opacity:.4;cursor:default}
+.btns button.on{background:var(--accent);border-color:var(--accent);color:#06201c;font-weight:600}
+#markerInfo{margin:8px 0 0;color:var(--muted);font-size:12px}
+details{margin-top:14px;padding-top:12px;border-top:1px solid var(--line)}
+summary{cursor:pointer;color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.06em}
+#cwForm{display:grid;gap:6px;margin-top:8px}
+#cwForm input,#cwForm select{width:100%;padding:6px 8px;background:var(--field);border:1px solid var(--line);border-radius:6px}
+#cwForm .help{font-size:12px;color:var(--muted);margin:0}
+footer{margin-top:14px;color:var(--muted);font-size:11px}
+footer a{color:var(--accent)}
+
+#panelToggle{position:fixed;left:12px;top:12px;z-index:101;width:38px;height:38px;border-radius:10px;border:1px solid var(--line);background:var(--panel-solid);font-size:18px;display:none}
+#panel:not(.hidden)~#panelToggle{display:none}
+#panel.hidden~#panelToggle{display:block}
+#panel .close{position:absolute;right:8px;top:8px;border:0;background:none;color:var(--muted);font-size:18px}
+
+#zoomCtl{position:fixed;right:12px;top:12px;z-index:100;display:flex;flex-direction:column;border:1px solid var(--line);border-radius:10px;overflow:hidden;background:var(--panel-solid)}
+#zoomCtl button{width:38px;height:38px;border:0;background:none;font-size:20px}
+#zoomCtl button+button{border-top:1px solid var(--line)}
+
+#coords{position:fixed;left:12px;bottom:12px;z-index:90;padding:6px 10px;background:var(--panel);border:1px solid var(--line);border-radius:8px;font-size:12px;font-variant-numeric:tabular-nums;pointer-events:none;white-space:pre-line}
+#panel:not(.hidden)~#coords{left:calc(min(340px,100vw - 24px) + 24px)}
+#attr{position:fixed;right:0;bottom:0;z-index:90;max-width:70vw;padding:2px 8px;background:#000a;color:#ccd;font-size:11px;border-top-left-radius:6px}
+@media (max-width:700px){
+  #panel:not(.hidden)~#coords,#panel:not(.hidden)~#zoomCtl{display:none}
+  #coords{bottom:28px}
+}
+</style>
+</head>
+<body>
+<div id="map" tabindex="0" aria-label="Mapa reliefu LIDAR"></div>
+
+<aside id="panel">
+  <button class="close" id="panelClose" title="Zwiń panel" aria-label="Zwiń panel">×</button>
+  <header>
+    <h1>LIDAR Polska</h1>
+    <p class="sub">Relief terenu z lotniczego skanowania laserowego (dane GUGiK) obok obrazu satelitarnego.</p>
+  </header>
+
+  <section>
+    <h2>Podkład</h2>
+    <div class="opts" id="baseList"></div>
+  </section>
+
+  <section>
+    <h2>Relief LIDAR</h2>
+    <div class="opts" id="reliefList"></div>
+    <p class="status" id="reliefStatus"></p>
+    <label class="row">Przezroczystość
+      <input id="opacity" type="range" min="0" max="100" value="70">
+      <output id="opacityOut">70%</output>
+    </label>
+    <div class="seg" role="group" aria-label="Tryb wyświetlania">
+      <button type="button" data-mode="blend">Mieszanie</button>
+      <button type="button" data-mode="swipe">Porównanie</button>
+    </div>
+  </section>
+
+  <section>
+    <h2>Moje punkty</h2>
+    <div class="btns">
+      <button id="btnAdd" type="button">+ Dodaj punkt</button>
+      <button id="btnUndo" type="button">Cofnij ostatni</button>
+      <button id="btnClear" type="button">Wyczyść</button>
+    </div>
+    <div class="btns" style="margin-top:6px">
+      <button id="btnImport" type="button">Importuj GPX/KML</button>
+      <button id="btnGpx" type="button">Eksport GPX</button>
+      <button id="btnKml" type="button">Eksport KML</button>
+    </div>
+    <input id="fileIn" type="file" accept=".gpx,.kml,application/gpx+xml,application/vnd.google-earth.kml+xml,text/xml" hidden>
+    <p id="markerInfo"></p>
+  </section>
+
+  <details>
+    <summary>Własne źródło WMS</summary>
+    <form id="cwForm" autocomplete="off">
+      <p class="help">Dodaj dowolną warstwę WMS (EPSG:3857) jako dodatkowy relief, np. nachylenie terenu z GUGiK.</p>
+      <input id="cwName" placeholder="Nazwa" required>
+      <input id="cwUrl" type="url" placeholder="Adres usługi WMS (https://…)" required>
+      <input id="cwLayers" list="cwLayerList" placeholder="Nazwa warstwy (LAYERS)" required>
+      <datalist id="cwLayerList"></datalist>
+      <select id="cwVersion"><option value="1.3.0">WMS 1.3.0</option><option value="1.1.1">WMS 1.1.1</option></select>
+      <div class="btns">
+        <button type="button" id="cwCaps">Pobierz listę warstw</button>
+        <button type="submit">Dodaj</button>
+      </div>
+      <p class="status" id="cwStatus"></p>
+    </form>
+  </details>
+
+  <footer>Dane wysokościowe i ortofotomapa: GUGiK / Geoportal.gov.pl (dane otwarte). Podkłady: Esri, OpenStreetMap.</footer>
+</aside>
+<button id="panelToggle" title="Pokaż panel" aria-label="Pokaż panel">☰</button>
+
+<div id="zoomCtl"><button id="zin" aria-label="Przybliż">+</button><button id="zout" aria-label="Oddal">−</button></div>
+<div id="coords">Przesuń kursor nad mapę</div>
+<div id="attr"></div>
+<noscript>Ta strona wymaga JavaScriptu.</noscript>
+
+<script>
+(() => {
+'use strict';
+
+/* =====================================================================
+ *  Konfiguracja źródeł danych
+ *  Wszystkie adresy w jednym miejscu – jeśli GUGiK zmieni usługę albo
+ *  nazwę warstwy, wystarczy poprawić tutaj (albo dodać własne źródło WMS
+ *  w panelu).
+ * ===================================================================== */
+const GUGIK = 'https://mapy.geoportal.gov.pl/wss/service/PZGIK/';
+const GUGIK_ATTR = 'Źródło: GUGiK (Geoportal.gov.pl)';
+// Wysokość terenu w punkcie (x = północ, y = wschód w układzie PL-1992).
+const ELEVATION_URL = (n, e) => `https://services.gugik.gov.pl/nmt/?request=GetHbyXY&x=${n.toFixed(2)}&y=${e.toFixed(2)}`;
+
+const BASE_LAYERS = [
+  { id: 'esri', name: 'Satelita (Esri)', maxNativeZoom: 18,
+    url: (z, x, y) => `https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/${z}/${y}/${x}`,
+    attribution: 'Obraz: Esri, Maxar, Earthstar Geographics' },
+  { id: 'ortho', name: 'Ortofotomapa (GUGiK)', maxNativeZoom: 20,
+    wms: { url: GUGIK + 'ORTO/WMS/StandardResolution', layers: 'Raster', format: 'image/jpeg', transparent: false },
+    attribution: GUGIK_ATTR },
+  { id: 'osm', name: 'OpenStreetMap', maxNativeZoom: 19,
+    url: (z, x, y) => `https://tile.openstreetmap.org/${z}/${x}/${y}.png`,
+    attribution: '© autorzy OpenStreetMap' },
+];
+
+const RELIEF_LAYERS = [
+  { id: 'hillshade', name: 'Cieniowanie terenu (hillshade)', maxNativeZoom: 20,
+    wms: { url: GUGIK + 'NMT/GRID1/WMS/ShadedRelief', layers: 'Raster' }, attribution: GUGIK_ATTR + ' – NMT' },
+  { id: 'skyview', name: 'Widoczność nieba (SVF / SkyView)', maxNativeZoom: 20,
+    wms: { url: GUGIK + 'NMT/GRID1/WMS/SkyView', layers: 'Raster' }, attribution: GUGIK_ATTR + ' – NMT' },
+];
+
+const POLAND_VIEW = { lat: 52.0, lng: 19.4, zoom: 7 };
+
+/* =====================================================================
+ *  Pomocnicze
+ * ===================================================================== */
+const TILE = 256;
+const R = 6378137;
+const ORIGIN = Math.PI * R;
+const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+const $ = (s) => document.querySelector(s);
+
+function h(tag, props = {}, ...kids) {
+  const el = document.createElement(tag);
+  for (const [k, v] of Object.entries(props)) {
+    if (k === 'class') el.className = v;
+    else if (k === 'text') el.textContent = v;
+    else if (k.startsWith('on')) el.addEventListener(k.slice(2), v);
+    else el.setAttribute(k, v);
+  }
+  el.append(...kids);
+  return el;
+}
+const debounce = (fn, ms) => { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; };
+const store = {
+  get(k, d) { try { const v = localStorage.getItem('lidarpl.' + k); return v == null ? d : JSON.parse(v); } catch { return d; } },
+  set(k, v) { try { localStorage.setItem('lidarpl.' + k, JSON.stringify(v)); } catch { /* tryb prywatny / brak dostępu */ } },
+};
+
+/* ---- projekcje ---- */
+function lonLatToWorld(lng, lat, z) {
+  const s = TILE * Math.pow(2, z);
+  const sin = Math.sin(clamp(lat, -85.0511, 85.0511) * Math.PI / 180);
+  return [(lng + 180) / 360 * s, (0.5 - Math.log((1 + sin) / (1 - sin)) / (4 * Math.PI)) * s];
+}
+function worldToLonLat(x, y, z) {
+  const s = TILE * Math.pow(2, z);
+  const n = Math.PI - 2 * Math.PI * y / s;
+  return [x / s * 360 - 180, 180 / Math.PI * Math.atan(0.5 * (Math.exp(n) - Math.exp(-n)))];
+}
+function tileBBox3857(z, x, y) {
+  const size = 2 * ORIGIN / Math.pow(2, z);
+  const minx = -ORIGIN + x * size, maxy = ORIGIN - y * size;
+  return [minx, maxy - size, minx + size, maxy];
+}
+/** WGS84 → PL-1992 (EPSG:2180), rozwinięcie Krügera (GRS80, południk 19°E). */
+function toPL1992(lat, lon) {
+  const a = 6378137, f = 1 / 298.257222101, k0 = 0.9993, lon0 = 19 * Math.PI / 180;
+  const n = f / (2 - f), e = Math.sqrt(f * (2 - f));
+  const n2 = n * n, n3 = n2 * n, n4 = n3 * n;
+  const A = a / (1 + n) * (1 + n2 / 4 + n4 / 64);
+  const al = [n / 2 - 2 * n2 / 3 + 5 * n3 / 16 + 41 * n4 / 180,
+              13 * n2 / 48 - 3 * n3 / 5 + 557 * n4 / 1440,
+              61 * n3 / 240 - 103 * n4 / 140,
+              49561 * n4 / 161280];
+  const phi = lat * Math.PI / 180, dl = lon * Math.PI / 180 - lon0, s = Math.sin(phi);
+  const t = Math.sinh(Math.atanh(s) - e * Math.atanh(e * s));
+  const xi0 = Math.atan2(t, Math.cos(dl));
+  const eta0 = Math.atanh(Math.sin(dl) / Math.hypot(t, 1));
+  let xi = xi0, eta = eta0;
+  for (let j = 1; j <= 4; j++) {
+    xi += al[j - 1] * Math.sin(2 * j * xi0) * Math.cosh(2 * j * eta0);
+    eta += al[j - 1] * Math.cos(2 * j * xi0) * Math.sinh(2 * j * eta0);
+  }
+  return { e: 500000 + k0 * A * eta, n: -5300000 + k0 * A * xi };
+}
+
+/* ---- WMS ---- */
+function wmsUrl(src, z, x, y) {
+  const bb = tileBBox3857(z, x, y).map((v) => +v.toFixed(4)).join(',');
+  const v13 = src.version !== '1.1.1';
+  const q = [
+    'SERVICE=WMS', 'VERSION=' + (src.version || '1.3.0'), 'REQUEST=GetMap',
+    'LAYERS=' + encodeURIComponent(src.layers).replace(/%2C/g, ','),
+    'STYLES=' + encodeURIComponent(src.styles || ''),
+    'FORMAT=' + (src.format || 'image/png'),
+    'TRANSPARENT=' + (src.transparent === false ? 'FALSE' : 'TRUE'),
+    'WIDTH=256', 'HEIGHT=256',
+    (v13 ? 'CRS=' : 'SRS=') + 'EPSG:3857',
+    'BBOX=' + bb,
+  ].join('&');
+  return src.url + (src.url.includes('?') ? (/[?&]$/.test(src.url) ? '' : '&') : '?') + q;
+}
+
+/* =====================================================================
+ *  Silnik mapy (bez zależności): kafelki Web Mercator + gesty
+ * ===================================================================== */
+class TileLayer {
+  constructor(o) {
+    Object.assign(this, { opacity: 1, maxNativeZoom: 19, minNativeZoom: 0, zIndex: 1, visible: true, onstats: null }, o);
+    this.tiles = new Map();
+    this.stats = { ok: 0, err: 0 };
+    this.el = h('div', { class: 'layer' });
+    this.el.style.zIndex = this.zIndex;
+    this.el.style.opacity = this.opacity;
+  }
+  setOpacity(v) { this.opacity = v; this.el.style.opacity = v; }
+  setClip(x) { this.el.style.clipPath = x == null ? '' : `inset(0 0 0 ${x}px)`; }
+  resetStats() { this.stats = { ok: 0, err: 0 }; this.onstats && this.onstats(this); }
+  _create(z, x, y, key) {
+    const img = new Image();
+    img.className = 'tile'; img.alt = ''; img.draggable = false; img.decoding = 'async';
+    const t = { z, x, y, img, done: false };
+    img.onload = () => { t.done = true; img.classList.add('ok'); this.stats.ok++; this._changed(); };
+    img.onerror = () => { t.done = true; this.stats.err++; this._changed(); };
+    img.src = this.url(z, x, y);
+    this.el.appendChild(img);
+    this.tiles.set(key, t);
+    return t;
+  }
+  _changed() { this.map && this.map.render(); this.onstats && this.onstats(this); }
+  _drop(key, t) { t.img.onload = t.img.onerror = null; t.img.removeAttribute('src'); t.img.remove(); this.tiles.delete(key); }
+  _update(map) {
+    const { w, h: hh } = map.size;
+    const tz = clamp(Math.min(Math.round(map.z), this.maxNativeZoom), this.minNativeZoom, 22);
+    const tl = map._topLeft();
+    const ts = TILE * Math.pow(2, map.z - tz);
+    const n = Math.pow(2, tz);
+    const x0 = Math.max(0, Math.floor(tl[0] / ts)), x1 = Math.min(n - 1, Math.floor((tl[0] + w) / ts));
+    const y0 = Math.max(0, Math.floor(tl[1] / ts)), y1 = Math.min(n - 1, Math.floor((tl[1] + hh) / ts));
+    const need = new Set();
+    let pending = false;
+    for (let ty = y0; ty <= y1; ty++) for (let tx = x0; tx <= x1; tx++) {
+      const key = tz + '/' + tx + '/' + ty;
+      need.add(key);
+      const t = this.tiles.get(key) || this._create(tz, tx, ty, key);
+      if (!t.done) pending = true;
+    }
+    for (const [key, t] of this.tiles) {
+      const s = Math.pow(2, map.z - t.z), size = TILE * s;
+      const left = Math.round(t.x * size - tl[0]), top = Math.round(t.y * size - tl[1]);
+      if (t.z === tz) { if (!need.has(key)) { this._drop(key, t); continue; } }
+      // kafle z innego poziomu zostają tylko do czasu załadowania nowych (brak „dziur” przy zmianie zoomu)
+      else if (!pending || left > w || top > hh || left + size < 0 || top + size < 0) { this._drop(key, t); continue; }
+      t.img.style.transform = `translate3d(${left}px,${top}px,0) scale(${s + 0.75 / TILE})`;
+      t.img.style.zIndex = t.z;
+    }
+  }
+  destroy() { for (const [k, t] of [...this.tiles]) this._drop(k, t); this.el.remove(); this.map = null; }
+}
+
+class TileMap {
+  constructor(el, { lat, lng, zoom, minZoom = 4, maxZoom = 20 }) {
+    Object.assign(this, { el, minZoom, maxZoom, z: zoom, layers: [], listeners: {}, dblZoom: true });
+    this.center = { lat, lng };
+    this.size = { w: el.clientWidth, h: el.clientHeight };
+    this.pane = h('div', { class: 'pane' });
+    el.appendChild(this.pane);
+    new ResizeObserver(() => { this.size = { w: el.clientWidth, h: el.clientHeight }; this.render(); this.fire('resize'); }).observe(el);
+    this._bind();
+  }
+  on(t, fn) { (this.listeners[t] ||= []).push(fn); return this; }
+  fire(t, d) { (this.listeners[t] || []).forEach((f) => f(d)); }
+
+  addLayer(l) { l.map = this; this.layers.push(l); this.el.insertBefore(l.el, this.pane); this.render(); }
+  removeLayer(l) { this.layers = this.layers.filter((x) => x !== l); l.destroy(); }
+
+  _topLeft() {
+    const [cx, cy] = lonLatToWorld(this.center.lng, this.center.lat, this.z);
+    return [cx - this.size.w / 2, cy - this.size.h / 2];
+  }
+  containerToLL(x, y) {
+    const tl = this._topLeft();
+    const [lng, lat] = worldToLonLat(tl[0] + x, tl[1] + y, this.z);
+    return { lat, lng };
+  }
+  llToContainer(lat, lng) {
+    const tl = this._topLeft(), [x, y] = lonLatToWorld(lng, lat, this.z);
+    return { x: x - tl[0], y: y - tl[1] };
+  }
+  /** Ustawia widok tak, by punkt `anchor` (lat/lng) leżał pod pikselem `pt`. */
+  _setAnchored(anchor, pt, z) {
+    z = clamp(z, this.minZoom, this.maxZoom);
+    const [ax, ay] = lonLatToWorld(anchor.lng, anchor.lat, z);
+    const [lng, lat] = worldToLonLat(ax - (pt.x - this.size.w / 2), ay - (pt.y - this.size.h / 2), z);
+    this.center = { lat: clamp(lat, -84, 84), lng };
+    this.z = z;
+    this.render();
+  }
+  setView(lat, lng, z) { this.center = { lat, lng }; this.z = clamp(z, this.minZoom, this.maxZoom); this.render(); }
+  zoomBy(dz, pt) {
+    pt = pt || { x: this.size.w / 2, y: this.size.h / 2 };
+    this._setAnchored(this.containerToLL(pt.x, pt.y), pt, dz > 0 ? Math.floor(this.z + 1e-6) + dz : Math.ceil(this.z - 1e-6) + dz);
+  }
+  fitPoints(pts) {
+    if (!pts.length) return;
+    const lats = pts.map((p) => p.lat), lngs = pts.map((p) => p.lon);
+    const c = { lat: (Math.min(...lats) + Math.max(...lats)) / 2, lng: (Math.min(...lngs) + Math.max(...lngs)) / 2 };
+    const pad = 80;
+    let z = pts.length === 1 ? 15 : this.maxZoom;
+    for (; z > this.minZoom && pts.length > 1; z--) {
+      const a = lonLatToWorld(Math.min(...lngs), Math.max(...lats), z), b = lonLatToWorld(Math.max(...lngs), Math.min(...lats), z);
+      if (b[0] - a[0] <= this.size.w - 2 * pad && b[1] - a[1] <= this.size.h - 2 * pad) break;
+    }
+    this.setView(c.lat, c.lng, z);
+  }
+
+  render() {
+    if (this._raf) return;
+    this._raf = requestAnimationFrame(() => {
+      this._raf = 0;
+      for (const l of this.layers) if (l.visible) l._update(this);
+      this.fire('move');
+    });
+  }
+
+  _bind() {
+    const el = this.el, ptrs = new Map();
+    let g = null, moved = false, downPt = null;
+    const pt = (e) => { const r = el.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; };
+    const pts = () => [...ptrs.values()];
+    const mid = () => { const p = pts(); return { x: p.reduce((s, q) => s + q.x, 0) / p.length, y: p.reduce((s, q) => s + q.y, 0) / p.length }; };
+    const dist = () => { const p = pts(); return p.length > 1 ? Math.hypot(p[0].x - p[1].x, p[0].y - p[1].y) : 0; };
+    const startGesture = () => { const m = mid(); g = { anchor: this.containerToLL(m.x, m.y), z: this.z, dist: dist() }; };
+
+    el.addEventListener('pointerdown', (e) => {
+      if (e.target.closest('.mk,.popup,.swipe')) return;
+      if (e.pointerType === 'mouse' && e.button !== 0) return;
+      el.setPointerCapture(e.pointerId);
+      ptrs.set(e.pointerId, pt(e));
+      if (ptrs.size === 1) { moved = false; downPt = pt(e); } else moved = true;   // drugi palec = pinch, nie klik
+      startGesture();
+      el.classList.add('dragging');
+    });
+    el.addEventListener('pointermove', (e) => {
+      const p = pt(e);
+      if (!ptrs.has(e.pointerId)) { if (e.pointerType === 'mouse') this.fire('hover', { ...this.containerToLL(p.x, p.y), pt: p }); return; }
+      ptrs.set(e.pointerId, p);
+      if (Math.hypot(p.x - downPt.x, p.y - downPt.y) > 4) moved = true;
+      if (!moved && ptrs.size === 1) return;
+      const d = dist();
+      const z = ptrs.size > 1 && g.dist > 0 ? g.z + Math.log2(d / g.dist) : g.z;
+      this._setAnchored(g.anchor, mid(), z);
+      this.fire('hover', { ...this.containerToLL(p.x, p.y), pt: p, dragging: true });
+    });
+    const end = (e) => {
+      if (!ptrs.has(e.pointerId)) return;
+      const p = pt(e);
+      ptrs.delete(e.pointerId);
+      if (ptrs.size) startGesture();
+      else {
+        el.classList.remove('dragging');
+        if (!moved && e.type === 'pointerup') this.fire('click', { ...this.containerToLL(p.x, p.y), pt: p });
+      }
+    };
+    el.addEventListener('pointerup', end);
+    el.addEventListener('pointercancel', end);
+    el.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      const p = pt(e);
+      const d = e.deltaMode === 1 ? e.deltaY * 33 : e.deltaY;
+      this._setAnchored(this.containerToLL(p.x, p.y), p, this.z - d * (e.ctrlKey ? 0.01 : 0.005));
+    }, { passive: false });
+    el.addEventListener('dblclick', (e) => {
+      if (!this.dblZoom || e.target.closest('.mk,.popup,.swipe')) return;
+      this.zoomBy(1, pt(e));
+    });
+    el.addEventListener('keydown', (e) => {
+      if (e.target !== el) return;
+      const step = 80, k = e.key;
+      const pan = (dx, dy) => this._setAnchored(this.containerToLL(this.size.w / 2 + dx, this.size.h / 2 + dy), { x: this.size.w / 2, y: this.size.h / 2 }, this.z);
+      if (k === 'ArrowLeft') pan(-step, 0); else if (k === 'ArrowRight') pan(step, 0);
+      else if (k === 'ArrowUp') pan(0, -step); else if (k === 'ArrowDown') pan(0, step);
+      else if (k === '+' || k === '=') this.zoomBy(1); else if (k === '-' || k === '_') this.zoomBy(-1);
+      else return;
+      e.preventDefault();
+    });
+  }
+}
+
+/* =====================================================================
+ *  Aplikacja
+ * ===================================================================== */
+const prefs = Object.assign({ base: 'esri', relief: 'hillshade', opacity: 70, mode: 'blend' }, store.get('prefs', {}));
+const savePrefs = () => store.set('prefs', prefs);
+let customWms = store.get('customWms', []);
+
+/* ---- widok początkowy (hash #zoom/lat/lon) ---- */
+function parseHash() {
+  const m = /^#(\d+(?:\.\d+)?)\/(-?\d+(?:\.\d+)?)\/(-?\d+(?:\.\d+)?)$/.exec(location.hash);
+  return m ? { zoom: +m[1], lat: +m[2], lng: +m[3] } : null;
+}
+const start = parseHash() || POLAND_VIEW;
+const map = new TileMap($('#map'), start);
+map.setView(start.lat, start.lng, start.zoom);
+
+const writeHash = debounce(() => {
+  try { history.replaceState(null, '', `#${map.z.toFixed(2)}/${map.center.lat.toFixed(5)}/${map.center.lng.toFixed(5)}`); } catch { /* np. sandbox */ }
+}, 300);
+
+/* ---- warstwy ---- */
+let baseLayer = null, reliefLayer = null;
+const findDef = (list, id) => list.find((d) => d.id === id);
+const allRelief = () => [...RELIEF_LAYERS, ...customWms.map((c) => ({
+  id: c.id, name: c.name, maxNativeZoom: 20, custom: true, attribution: 'Własne źródło WMS',
+  wms: { url: c.url, layers: c.layers, version: c.version },
+}))];
+
+function makeLayer(def, zIndex) {
+  return new TileLayer({ url: def.url || ((z, x, y) => wmsUrl(def.wms, z, x, y)), maxNativeZoom: def.maxNativeZoom ?? 19, zIndex, name: def.name });
+}
+
+function setBase(id) {
+  const def = findDef(BASE_LAYERS, id) || BASE_LAYERS[0];
+  prefs.base = def.id; savePrefs();
+  if (baseLayer) map.removeLayer(baseLayer);
+  baseLayer = makeLayer(def, 1);
+  map.addLayer(baseLayer);
+  updateAttribution();
+}
+
+const reliefStatus = $('#reliefStatus');
+function showReliefStats() {
+  if (!reliefLayer) { reliefStatus.textContent = ''; reliefStatus.className = 'status'; return; }
+  const { ok, err } = reliefLayer.stats;
+  let text = '', cls = 'status';
+  if (err && !ok) { text = `⚠ Serwer nie zwrócił kafli (błędy: ${err}). Sprawdź adres usługi i nazwę warstwy albo przybliż mapę.`; cls += ' warn'; }
+  else if (err) { text = `⚠ Część kafli się nie załadowała (${err} z ${ok + err}).`; cls += ' warn'; }
+  else if (ok) { text = `✓ Wczytano kafli: ${ok}`; cls += ' ok'; }
+  reliefStatus.textContent = text; reliefStatus.className = cls;
+}
+const scheduleStats = (() => { let q = false; return () => { if (q) return; q = true; requestAnimationFrame(() => { q = false; showReliefStats(); }); }; })();
+
+function setRelief(id) {
+  prefs.relief = id; savePrefs();
+  if (reliefLayer) { map.removeLayer(reliefLayer); reliefLayer = null; }
+  const def = findDef(allRelief(), id);
+  if (def) {
+    reliefLayer = makeLayer(def, 2);
+    reliefLayer.setOpacity(prefs.mode === 'swipe' ? 1 : prefs.opacity / 100);
+    reliefLayer.onstats = scheduleStats;
+    map.addLayer(reliefLayer);
+  }
+  showReliefStats();
+  applySwipe();
+  updateAttribution();
+}
+
+function updateAttribution() {
+  const parts = new Set();
+  const b = findDef(BASE_LAYERS, prefs.base); if (b) parts.add(b.attribution);
+  const r = findDef(allRelief(), prefs.relief); if (r) parts.add(r.attribution);
+  $('#attr').textContent = [...parts].join(' · ');
+}
+
+function radio(name, def, checked, onPick, onRemove) {
+  const input = h('input', { type: 'radio', name, value: def.id });
+  input.checked = checked;
+  input.addEventListener('change', () => onPick(def.id));
+  const label = h('label', {}, input, h('span', { text: def.name }));
+  if (onRemove) label.append(h('button', { class: 'x', type: 'button', title: 'Usuń źródło', onclick: (e) => { e.preventDefault(); onRemove(def.id); } , text: '×' }));
+  return label;
+}
+function renderLists() {
+  $('#baseList').replaceChildren(...BASE_LAYERS.map((d) => radio('base', d, d.id === prefs.base, setBase)));
+  const none = { id: 'none', name: 'Brak (tylko podkład)' };
+  $('#reliefList').replaceChildren(
+    ...allRelief().map((d) => radio('relief', d, d.id === prefs.relief, setRelief, d.custom ? removeCustom : null)),
+    radio('relief', none, !findDef(allRelief(), prefs.relief), setRelief),
+  );
+}
+
+/* ---- przezroczystość / porównanie ---- */
+const opacity = $('#opacity'), opacityOut = $('#opacityOut');
+const swipe = h('div', { class: 'swipe', title: 'Przeciągnij, aby porównać' }, h('b', { text: '⇆' }));
+map.el.appendChild(swipe);
+let swipeFrac = 0.5;
+
+function applySwipe() {
+  const on = prefs.mode === 'swipe' && reliefLayer;
+  if (reliefLayer) reliefLayer.setOpacity(prefs.mode === 'swipe' ? 1 : prefs.opacity / 100);
+  opacity.disabled = prefs.mode === 'swipe';
+  if (!on) { reliefLayer && reliefLayer.setClip(null); swipe.style.display = 'none'; return; }
+  const x = Math.round(swipeFrac * map.size.w);
+  reliefLayer.setClip(x);
+  swipe.style.left = x + 'px';
+  swipe.style.display = 'block';
+}
+swipe.addEventListener('pointerdown', (e) => {
+  swipe.setPointerCapture(e.pointerId);
+  const move = (ev) => { swipeFrac = clamp(ev.clientX / map.size.w, 0.02, 0.98); applySwipe(); };
+  const up = () => { swipe.removeEventListener('pointermove', move); swipe.removeEventListener('pointerup', up); swipe.removeEventListener('pointercancel', up); };
+  swipe.addEventListener('pointermove', move); swipe.addEventListener('pointerup', up); swipe.addEventListener('pointercancel', up);
+  e.preventDefault();
+});
+map.on('resize', applySwipe);
+
+opacity.value = prefs.opacity; opacityOut.textContent = prefs.opacity + '%';
+opacity.addEventListener('input', () => {
+  prefs.opacity = +opacity.value; opacityOut.textContent = prefs.opacity + '%';
+  if (reliefLayer && prefs.mode !== 'swipe') reliefLayer.setOpacity(prefs.opacity / 100);
+  savePrefs();
+});
+function setMode(m) {
+  prefs.mode = m; savePrefs();
+  document.querySelectorAll('.seg button').forEach((b) => b.classList.toggle('on', b.dataset.mode === m));
+  applySwipe();
+}
+document.querySelectorAll('.seg button').forEach((b) => b.addEventListener('click', () => setMode(b.dataset.mode)));
+
+/* ---- własne źródła WMS ---- */
+function removeCustom(id) {
+  customWms = customWms.filter((c) => c.id !== id); store.set('customWms', customWms);
+  if (prefs.relief === id) prefs.relief = 'none';
+  renderLists(); setRelief(prefs.relief);
+}
+const cwStatus = $('#cwStatus');
+$('#cwForm').addEventListener('submit', (e) => {
+  e.preventDefault();
+  const c = { id: 'custom-' + Date.now(), name: $('#cwName').value.trim(), url: $('#cwUrl').value.trim(), layers: $('#cwLayers').value.trim(), version: $('#cwVersion').value };
+  customWms.push(c); store.set('customWms', customWms);
+  e.target.reset(); cwStatus.textContent = ''; cwStatus.className = 'status';
+  prefs.relief = c.id; renderLists(); setRelief(c.id);
+});
+$('#cwCaps').addEventListener('click', async () => {
+  const url = $('#cwUrl').value.trim();
+  if (!url) { cwStatus.textContent = 'Najpierw wpisz adres usługi.'; cwStatus.className = 'status warn'; return; }
+  cwStatus.textContent = 'Pobieram…'; cwStatus.className = 'status';
+  try {
+    const res = await fetch(url + (url.includes('?') ? '&' : '?') + 'SERVICE=WMS&REQUEST=GetCapabilities');
+    const doc = new DOMParser().parseFromString(await res.text(), 'text/xml');
+    const names = [...doc.getElementsByTagNameNS('*', 'Layer')]
+      .map((l) => [...l.children].find((c) => c.localName === 'Name')?.textContent)
+      .filter(Boolean);
+    if (!names.length) throw new Error('brak warstw');
+    $('#cwLayerList').replaceChildren(...names.map((n) => h('option', { value: n })));
+    if (!$('#cwLayers').value) $('#cwLayers').value = names[0];
+    cwStatus.textContent = `Znaleziono warstwy: ${names.length} (podpowiedzi w polu „Nazwa warstwy”).`; cwStatus.className = 'status ok';
+  } catch {
+    cwStatus.textContent = 'Nie udało się pobrać listy (serwer może blokować zapytania z przeglądarki). Wpisz nazwę warstwy ręcznie.';
+    cwStatus.className = 'status warn';
+  }
+});
+
+/* ---- panel ---- */
+const panel = $('#panel');
+$('#panelClose').addEventListener('click', () => panel.classList.add('hidden'));
+$('#panelToggle').addEventListener('click', () => panel.classList.remove('hidden'));
+if (innerWidth < 700) panel.classList.add('hidden');
+$('#zin').addEventListener('click', () => map.zoomBy(1));
+$('#zout').addEventListener('click', () => map.zoomBy(-1));
+
+/* =====================================================================
+ *  Moje punkty (znaczniki) + GPX / KML
+ * ===================================================================== */
+const markers = [];   // { lat, lon, name, el }
+let adding = false, popupFor = null, nextMk = 1;
+const popup = h('div', { class: 'popup' });
+const popupName = h('input', { maxlength: '80', 'aria-label': 'Nazwa punktu' });
+const popupLL = h('div', { class: 'll' });
+const popupDel = h('button', { type: 'button', text: 'Usuń punkt' });
+popup.append(popupName, popupLL, popupDel);
+popup.style.display = 'none';
+map.pane.appendChild(popup);
+
+const saveMarkers = () => store.set('markers', markers.map(({ lat, lon, name }) => ({ lat, lon, name })));
+const fmtLL = (lat, lon) => `${lat.toFixed(5)}, ${lon.toFixed(5)}`;
+
+function placeMarkers() {
+  for (const m of markers) {
+    const p = map.llToContainer(m.lat, m.lon);
+    m.el.style.transform = `translate(${p.x.toFixed(1)}px,${p.y.toFixed(1)}px)`;
+  }
+  if (popupFor) {
+    const p = map.llToContainer(popupFor.lat, popupFor.lon);
+    popup.style.transform = `translate(${p.x.toFixed(1)}px,${p.y.toFixed(1)}px)`;
+  }
+}
+function closePopup() { popupFor = null; popup.style.display = 'none'; }
+function openPopup(m) {
+  popupFor = m; popupName.value = m.name; popupLL.textContent = fmtLL(m.lat, m.lon);
+  popup.style.display = 'block'; placeMarkers();
+}
+popupName.addEventListener('input', () => { if (popupFor) { popupFor.name = popupName.value; popupFor.el.title = popupFor.name; saveMarkers(); } });
+popupName.addEventListener('keydown', (e) => { if (e.key === 'Enter') closePopup(); });
+popupDel.addEventListener('click', () => { if (popupFor) removeMarker(popupFor); });
+
+function addMarker(lat, lon, name, { open = false, save = true } = {}) {
+  const m = { lat, lon, name: name || `Punkt ${nextMk}` };
+  nextMk++;
+  m.el = h('div', { class: 'mk', title: m.name }, h('i'));
+  m.el.addEventListener('click', (e) => { e.stopPropagation(); openPopup(m); });
+  map.pane.appendChild(m.el);
+  markers.push(m);
+  if (open) openPopup(m);
+  placeMarkers();
+  if (save) { saveMarkers(); refreshMarkerUI(); }
+  return m;
+}
+function removeMarker(m) {
+  if (popupFor === m) closePopup();
+  m.el.remove();
+  markers.splice(markers.indexOf(m), 1);
+  saveMarkers(); refreshMarkerUI();
+}
+
+const markerInfo = $('#markerInfo');
+function refreshMarkerUI(msg) {
+  const n = markers.length;
+  $('#btnUndo').disabled = $('#btnClear').disabled = $('#btnGpx').disabled = $('#btnKml').disabled = !n;
+  markerInfo.textContent = msg || (n ? `Zapisane punkty: ${n} (w tej przeglądarce)` : 'Brak punktów. Kliknij „Dodaj punkt”, a potem mapę.');
+}
+function setAdding(on) {
+  adding = on; map.dblZoom = !on;
+  $('#btnAdd').classList.toggle('on', on);
+  $('#btnAdd').textContent = on ? '✓ Zakończ dodawanie' : '+ Dodaj punkt';
+  map.el.classList.toggle('adding', on);
+}
+$('#btnAdd').addEventListener('click', () => setAdding(!adding));
+$('#btnUndo').addEventListener('click', () => { if (markers.length) removeMarker(markers[markers.length - 1]); });
+$('#btnClear').addEventListener('click', () => {
+  if (!markers.length || !confirm(`Usunąć wszystkie punkty (${markers.length})?`)) return;
+  closePopup(); markers.splice(0).forEach((m) => m.el.remove()); saveMarkers(); refreshMarkerUI();
+});
+map.on('click', (e) => {
+  closePopup();
+  if (adding) addMarker(e.lat, e.lng, '', { open: true });
+});
+map.on('move', placeMarkers);
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') { closePopup(); setAdding(false); } });
+
+/* ---- eksport ---- */
+const clean = (s) => String(s).replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '');
+const esc = (s) => clean(s).replace(/[<>&"']/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&apos;' }[c]));
+function toGpx(pts) {
+  return `<?xml version="1.0" encoding="UTF-8"?>\n<gpx version="1.1" creator="LIDAR Polska" xmlns="http://www.topografix.com/GPX/1/1">\n`
+    + pts.map((p) => `  <wpt lat="${p.lat.toFixed(7)}" lon="${p.lon.toFixed(7)}"><name>${esc(p.name)}</name></wpt>\n`).join('') + `</gpx>\n`;
+}
+function toKml(pts) {
+  return `<?xml version="1.0" encoding="UTF-8"?>\n<kml xmlns="http://www.opengis.net/kml/2.2">\n<Document>\n  <name>LIDAR Polska – moje punkty</name>\n`
+    + pts.map((p) => `  <Placemark><name>${esc(p.name)}</name><Point><coordinates>${p.lon.toFixed(7)},${p.lat.toFixed(7)},0</coordinates></Point></Placemark>\n`).join('')
+    + `</Document>\n</kml>\n`;
+}
+function download(name, mime, text) {
+  const a = h('a', { href: URL.createObjectURL(new Blob([text], { type: mime })), download: name });
+  document.body.append(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+}
+const stamp = () => new Date().toISOString().slice(0, 10).replace(/-/g, '');
+$('#btnGpx').addEventListener('click', () => download(`punkty-lidar-${stamp()}.gpx`, 'application/gpx+xml', toGpx(markers)));
+$('#btnKml').addEventListener('click', () => download(`punkty-lidar-${stamp()}.kml`, 'application/vnd.google-earth.kml+xml', toKml(markers)));
+
+/* ---- import ---- */
+function parsePoints(text) {
+  const doc = new DOMParser().parseFromString(text, 'text/xml');
+  if (doc.getElementsByTagName('parsererror').length) return null;
+  const all = (name, root = doc) => [...root.getElementsByTagNameNS('*', name)];
+  const nameOf = (el) => [...el.children].find((c) => c.localName === 'name')?.textContent.trim() || '';
+  const root = doc.documentElement.localName;
+  const out = []; let skipped = 0;
+  if (root === 'gpx') {
+    for (const w of all('wpt')) {
+      const lat = parseFloat(w.getAttribute('lat')), lon = parseFloat(w.getAttribute('lon'));
+      if (Number.isFinite(lat) && Number.isFinite(lon)) out.push({ lat, lon, name: nameOf(w) }); else skipped++;
+    }
+    skipped += all('trk').length + all('rte').length;
+  } else if (root === 'kml') {
+    for (const pm of all('Placemark')) {
+      const c = all('coordinates', pm)[0];
+      const isPoint = all('Point', pm).length && c;
+      const [lon, lat] = isPoint ? c.textContent.trim().split(/[,\s]+/).map(parseFloat) : [NaN, NaN];
+      if (Number.isFinite(lat) && Number.isFinite(lon)) out.push({ lat, lon, name: nameOf(pm) }); else skipped++;
+    }
+  } else return null;
+  return { points: out, skipped };
+}
+$('#btnImport').addEventListener('click', () => $('#fileIn').click());
+$('#fileIn').addEventListener('change', async (e) => {
+  const file = e.target.files[0]; e.target.value = '';
+  if (!file) return;
+  const res = parsePoints(await file.text());
+  if (!res) { refreshMarkerUI(`Nie rozpoznano pliku „${file.name}” (obsługiwane: GPX i KML).`); return; }
+  const added = res.points.map((p) => addMarker(p.lat, p.lon, p.name, { save: false }));
+  saveMarkers();
+  refreshMarkerUI();
+  markerInfo.textContent = `Zaimportowano punkty: ${added.length}` + (res.skipped ? `, pominięto obiekty inne niż punkty: ${res.skipped}` : '') + `. Łącznie: ${markers.length}.`;
+  map.fitPoints(added);
+});
+
+/* =====================================================================
+ *  Współrzędne i wysokość pod kursorem
+ * ===================================================================== */
+const coords = $('#coords');
+const elevCache = new Map();
+let elevCtl = null, elevFails = 0, lastLL = null;
+const inPoland = (lat, lon) => lat > 48.9 && lat < 55.0 && lon > 13.9 && lon < 24.3;
+
+function showCoords(extra) {
+  if (!lastLL) return;
+  const { lat, lng } = lastLL;
+  const pl = inPoland(lat, lng) ? toPL1992(lat, lng) : null;
+  coords.textContent = `φ ${lat.toFixed(5)}  λ ${lng.toFixed(5)}`
+    + (pl ? `\nPL-1992  X ${pl.n.toFixed(0)}  Y ${pl.e.toFixed(0)}` : '')
+    + (extra ? `\n${extra}` : '');
+}
+const fetchElevation = debounce(async () => {
+  if (!lastLL) return;
+  const { lat, lng } = lastLL;
+  if (!inPoland(lat, lng)) { showCoords('Wysokość: poza Polską'); return; }
+  if (elevFails >= 3) { showCoords('Wysokość: niedostępna'); return; }
+  const pl = toPL1992(lat, lng), key = `${pl.n.toFixed(0)},${pl.e.toFixed(0)}`;
+  if (elevCache.has(key)) { showCoords(`Wysokość: ${elevCache.get(key)} m n.p.m.`); return; }
+  elevCtl && elevCtl.abort();
+  elevCtl = new AbortController();
+  try {
+    const res = await fetch(ELEVATION_URL(pl.n, pl.e), { signal: elevCtl.signal });
+    const v = parseFloat((await res.text()).trim());
+    if (!res.ok || !Number.isFinite(v)) throw new Error('bad');
+    elevFails = 0; elevCache.set(key, v.toFixed(1));
+    if (lastLL.lat === lat && lastLL.lng === lng) showCoords(`Wysokość: ${v.toFixed(1)} m n.p.m.`);
+  } catch (err) {
+    if (err.name === 'AbortError') return;
+    elevFails++;
+    if (lastLL.lat === lat && lastLL.lng === lng) showCoords('Wysokość: —');
+  }
+}, 250);
+map.on('hover', (e) => {
+  lastLL = { lat: e.lat, lng: e.lng };
+  showCoords();
+  if (!e.dragging) fetchElevation();
+});
+map.on('click', (e) => { lastLL = { lat: e.lat, lng: e.lng }; showCoords(); fetchElevation(); });
+
+/* =====================================================================
+ *  Start
+ * ===================================================================== */
+map.on('move', writeHash);
+addEventListener('hashchange', () => {   // wklejony link / „wstecz” w tej samej karcie
+  const hv = parseHash();
+  if (hv) map.setView(hv.lat, hv.lng, hv.zoom);
+});
+(store.get('markers', []) || []).forEach((p) => {
+  if (Number.isFinite(p.lat) && Number.isFinite(p.lon)) addMarker(p.lat, p.lon, p.name, { save: false });
+});
+renderLists();
+setBase(prefs.base);
+setMode(prefs.mode);
+setRelief(findDef(allRelief(), prefs.relief) ? prefs.relief : 'none');
+refreshMarkerUI();
+map.el.focus({ preventScroll: true });
+
+// uchwyt do testów i debugowania w konsoli
+window.LidarPL = { map, toPL1992, wmsUrl, tileBBox3857, get markers() { return markers; } };
+})();
+</script>
+</body>
+</html>
