@@ -79,6 +79,14 @@ footer a{color:var(--accent)}
 #panel.hidden~#panelToggle{display:block}
 #panel .close{position:absolute;right:8px;top:8px;border:0;background:none;color:var(--muted);font-size:18px}
 
+#loader{position:fixed;left:0;right:0;top:0;height:3px;z-index:120;pointer-events:none;opacity:0;transition:opacity .3s}
+#loader.on{opacity:1;transition-duration:.1s}
+#loader i{display:block;height:100%;width:0;background:var(--accent);box-shadow:0 0 8px var(--accent);transition:width .25s ease}
+#loadTxt{position:fixed;top:12px;left:50%;transform:translateX(-50%);z-index:95;display:flex;align-items:center;gap:8px;padding:5px 12px;border-radius:999px;background:var(--panel);border:1px solid var(--line);font-size:12px;font-variant-numeric:tabular-nums;white-space:nowrap;pointer-events:none;opacity:0;transition:opacity .3s}
+#loadTxt.on{opacity:1;transition-duration:.1s}
+#loadTxt::before{content:"";width:12px;height:12px;border-radius:50%;border:2px solid var(--line);border-top-color:var(--accent);animation:spin .8s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+@media (prefers-reduced-motion:reduce){#loadTxt::before{animation:none}#loader i{transition:none}}
 #zoomCtl{position:fixed;right:12px;top:12px;z-index:100;display:flex;flex-direction:column;border:1px solid var(--line);border-radius:10px;overflow:hidden;background:var(--panel-solid)}
 #zoomCtl button{width:38px;height:38px;border:0;background:none;font-size:20px}
 #zoomCtl button+button{border-top:1px solid var(--line)}
@@ -166,6 +174,8 @@ footer a{color:var(--accent)}
 </aside>
 <button id="panelToggle" title="Pokaż panel" aria-label="Pokaż panel">☰</button>
 
+<div id="loader" role="progressbar" aria-label="Ładowanie mapy" aria-valuemin="0" aria-valuemax="100" aria-valuenow="100"><i></i></div>
+<div id="loadTxt"></div>
 <div id="zoomCtl"><button id="zin" aria-label="Przybliż">+</button><button id="zout" aria-label="Oddal">−</button></div>
 <div id="coords">Przesuń kursor nad mapę</div>
 <div id="attr"></div>
@@ -326,15 +336,20 @@ class TileLayer {
     const img = new Image();
     img.className = 'tile'; img.alt = ''; img.draggable = false; img.decoding = 'async';
     const t = { z, x, y, img, done: false };
-    img.onload = () => { t.done = true; img.classList.add('ok'); this.stats.ok++; this._changed(); };
-    img.onerror = () => { t.done = true; this.stats.err++; this._changed(); };
+    img.onload = () => { t.done = true; img.classList.add('ok'); this.stats.ok++; this.map.tileEnd(false); this._changed(); };
+    img.onerror = () => { t.done = true; this.stats.err++; this.map.tileEnd(false); this._changed(); };
+    this.map.tileStart();
     img.src = this.url(z, x, y);
     this.el.appendChild(img);
     this.tiles.set(key, t);
     return t;
   }
   _changed() { this.map && this.map.render(); this.onstats && this.onstats(this); }
-  _drop(key, t) { t.img.onload = t.img.onerror = null; t.img.removeAttribute('src'); t.img.remove(); this.tiles.delete(key); }
+  _drop(key, t) {
+    t.img.onload = t.img.onerror = null;
+    if (!t.done) { t.done = true; this.map.tileEnd(true); }   // anulowany w locie: nie liczy się do postępu
+    t.img.removeAttribute('src'); t.img.remove(); this.tiles.delete(key);
+  }
   _update(map) {
     const far = Math.round(map.z) < this.minZoom;   // za mocno oddalone: nie pobieramy kafli
     if (far !== !!this.tooFar) { this.tooFar = far; this.onstats && this.onstats(this); }
@@ -372,6 +387,7 @@ class TileMap {
   constructor(el, { lat, lng, zoom, minZoom = 4, maxZoom = 20 }) {
     Object.assign(this, { el, minZoom, maxZoom, z: zoom, layers: [], listeners: {}, dblZoom: true });
     this.center = { lat, lng };
+    this.loading = { pending: 0, total: 0, done: 0 };   // postęp ładowania kafli (wszystkie warstwy)
     this.size = { w: el.clientWidth, h: el.clientHeight };
     this.pane = h('div', { class: 'pane' });
     el.appendChild(this.pane);
@@ -380,6 +396,19 @@ class TileMap {
   }
   on(t, fn) { (this.listeners[t] ||= []).push(fn); return this; }
   fire(t, d) { (this.listeners[t] || []).forEach((f) => f(d)); }
+
+  tileStart() { this.loading.pending++; this.loading.total++; this._loadChanged(); }
+  tileEnd(cancelled) {
+    const l = this.loading;
+    l.pending--;
+    if (cancelled) l.total--; else l.done++;
+    this._loadChanged();
+  }
+  _loadChanged() {
+    const l = this.loading;
+    this.fire('loading', { ...l });
+    if (!l.pending) l.total = l.done = 0;   // następna seria ładowania liczy się od zera
+  }
 
   addLayer(l) { l.map = this; this.layers.push(l); this.el.insertBefore(l.el, this.pane); this.render(); }
   removeLayer(l) { this.layers = this.layers.filter((x) => x !== l); l.destroy(); }
@@ -539,6 +568,34 @@ function showBaseStats() {
   baseStatus.className = 'status' + (broken ? ' warn' : '');
 }
 const rafOnce = (fn) => { let q = false; return () => { if (q) return; q = true; requestAnimationFrame(() => { q = false; fn(); }); }; };
+
+/* ---- pasek ładowania ---- */
+const loaderEl = $('#loader'), loaderBar = loaderEl.firstElementChild, loadTxt = $('#loadTxt');
+const LOADER_DELAY = 250;   // ms – nie migamy paskiem przy szybkich (np. z cache) wczytaniach
+let loaderShowT = 0, loaderHideT = 0, loaderOn = false;
+function setLoader(on) {
+  loaderOn = on;
+  loaderEl.classList.toggle('on', on); loadTxt.classList.toggle('on', on);
+  map.el.setAttribute('aria-busy', String(on));
+}
+const updateLoader = rafOnce(() => {
+  const { pending, total, done } = map.loading;
+  if (pending > 0) {
+    clearTimeout(loaderHideT); loaderHideT = 0;
+    const pct = total ? Math.round(done / total * 100) : 0;
+    loaderBar.style.width = Math.max(pct, 4) + '%';
+    loaderEl.setAttribute('aria-valuenow', String(pct));
+    loadTxt.textContent = `Ładowanie mapy… ${pct}% (${done}/${total})`;
+    if (!loaderOn && !loaderShowT) loaderShowT = setTimeout(() => { loaderShowT = 0; if (map.loading.pending > 0) setLoader(true); }, LOADER_DELAY);
+  } else {
+    clearTimeout(loaderShowT); loaderShowT = 0;
+    if (loaderOn && !loaderHideT) {
+      loaderBar.style.width = '100%'; loaderEl.setAttribute('aria-valuenow', '100');
+      loaderHideT = setTimeout(() => { loaderHideT = 0; if (!map.loading.pending) setLoader(false); }, 350);
+    }
+  }
+});
+map.on('loading', updateLoader);
 
 let labelsLayer = null;
 function syncLabels() {

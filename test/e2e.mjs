@@ -51,10 +51,11 @@ const bboxToTile = (bbox) => { const [x0, , , y1] = bbox.split(',').map(Number);
 const browser = await chromium.launch();
 const ctx = await browser.newContext({ viewport: { width: 1280, height: 800 }, acceptDownloads: true });
 const log = { esri: [], osm: [], wms: [], elev: [], custom: [], other: [] };
-const mode = { gugikFail: false, esriFail: false };
+const mode = { gugikFail: false, esriFail: false, delay: 0 };   // delay: opóźnienie odpowiedzi GUGiK [ms]
 const CORS = { 'access-control-allow-origin': '*' };
-await ctx.route(/^https?:/, (route) => {
+await ctx.route(/^https?:/, async (route) => {
   const u = new URL(route.request().url());
+  if (mode.delay && u.host === 'mapy.geoportal.gov.pl') await sleep(mode.delay);
   const fulfill = (body, type = 'image/png', status = 200) => route.fulfill({ status, body, contentType: type, headers: CORS });
   if (u.host === 'server.arcgisonline.com') {
     log.esri.push(u);
@@ -374,6 +375,46 @@ console.log('\n[10] Nazwy miejscowości, próg przybliżenia, mnożenie, lista m
   mode.esriFail = false;
   await page.check('input[name=base][value=osm]'); await page.check('input[name=base][value=esri]'); await settle(700);
   check('po naprawie ostrzeżenie znika', (await page.textContent('#baseStatus')) === '');
+}
+
+console.log('\n[11] Pasek ładowania');
+{
+  await page.goto('about:blank');
+  await page.goto(PAGE + '#13.00/50.06470/19.94500'); await settle(300);
+  await page.check('input[name=relief][value=hillshade]'); await settle(600);
+  const loader = () => ev(() => ({
+    on: document.querySelector('#loader').classList.contains('on') && document.querySelector('#loadTxt').classList.contains('on'),
+    w: document.querySelector('#loader i').style.width, txt: document.querySelector('#loadTxt').textContent,
+    now: +document.querySelector('#loader').getAttribute('aria-valuenow'), busy: document.querySelector('#map').getAttribute('aria-busy'),
+    load: { ...LidarPL.map.loading },
+  }));
+  let a = await loader();
+  check('po wczytaniu wszystkiego pasek jest ukryty, a licznik wyzerowany', !a.on && a.busy !== 'true' && a.load.pending === 0 && a.load.total === 0, JSON.stringify(a));
+
+  mode.delay = 1800;   // relief z GUGiK odpowiada wolno, Esri szybko
+  await page.evaluate(() => LidarPL.map.setView(54.352, 18.6466, 13));
+  await sleep(700);
+  a = await loader();
+  check('podczas wolnego ładowania pasek jest widoczny', a.on && a.busy === 'true' && a.load.pending > 0, JSON.stringify(a));
+  check('postęp jest częściowy (0 < % < 100) i opisany tekstem', a.now > 0 && a.now < 100 && /^Ładowanie mapy… \d+% \(\d+\/\d+\)$/.test(a.txt), JSON.stringify(a));
+  check('szerokość paska odpowiada postępowi', near(parseFloat(a.w), Math.max(a.now, 4), 0.5), `${a.w} vs ${a.now}`);
+  await shot('09-loading');
+  await sleep(2600);
+  a = await loader();
+  check('po dojściu wszystkich kafli pasek znika', !a.on && a.busy === 'false' && a.load.pending === 0, JSON.stringify(a));
+  check('pasek doszedł do 100% przed ukryciem', a.now === 100, String(a.now));
+
+  mode.delay = 800;   // szybkie ruchy: kafle są anulowane w locie
+  for (let i = 0; i < 5; i++) { await page.evaluate((i) => LidarPL.map.setView(50 + i * 0.7, 19 + i * 0.7, 12 + (i % 2) * 2), i); await sleep(90); }
+  await sleep(2200);
+  a = await loader();
+  check('po szybkich ruchach (anulowane kafle) nic nie „wisi”', !a.on && a.load.pending === 0 && a.load.total === 0 && a.load.done === 0, JSON.stringify(a));
+
+  mode.delay = 0; mode.esriFail = true;   // błędy też kończą ładowanie
+  await page.evaluate(() => LidarPL.map.setView(53.0, 22.0, 13)); await sleep(900);
+  a = await loader();
+  check('kafle zakończone błędem nie blokują paska', !a.on && a.load.pending === 0, JSON.stringify(a));
+  mode.esriFail = false;
 }
 
 check('brak błędów JS w konsoli', errors.length === 0, errors.join(' | '));

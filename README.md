@@ -19,6 +19,7 @@ pozostałe warstwy działają, a po wystawieniu przez http(s) działa też OSM.
   Relief pojawia się od poziomu przybliżenia 10 (`RELIEF_MIN_ZOOM`); w skali kraju cieniowanie nizin jest jednolicie szare i tylko zasłania podkład.
 - Domyślnie relief jest mieszany przez **mnożenie** (zachowuje kolory podkładu); suwak przezroczystości (0–100%) reguluje siłę.
 - Tryb **Porównanie** z przeciąganą linią podziału (relief po prawej, podkład po lewej).
+- **Pasek ładowania** u góry ekranu z procentami (wszystkie warstwy razem). Pojawia się, gdy ładowanie trwa dłużej niż ułamek sekundy, i znika po wczytaniu całej mapy.
 - Własne punkty: dodawanie, nazwy, usuwanie, import i eksport **GPX / KML**, zapis w `localStorage` przeglądarki.
 - Współrzędne WGS84 i PL-1992 oraz wysokość terenu pod kursorem.
 - Link do widoku w adresie (`#zoom/lat/lon`), obsługa myszy, dotyku (pinch) i klawiatury (strzałki, `+`/`-`).
