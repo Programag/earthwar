@@ -16,7 +16,9 @@ pozostałe warstwy działają, a po wystawieniu przez http(s) działa też OSM.
 - Podkłady: satelita Esri, ortofotomapa GUGiK, OpenStreetMap. Zdjęcia Esri nie mają podpisów, więc nazwy miejscowości i granice to osobna warstwa (pole „Nazwy miejscowości i granice”).
 - Lista **„Przejdź do miasta”** (największe miasta, Zakopane, Biskupin). Start: Kraków.
 - Relief LIDAR z usług WMS GUGiK: cieniowanie terenu (hillshade) i widoczność nieba (SkyView / SVF).
-  Relief pojawia się od poziomu przybliżenia 10 (`RELIEF_MIN_ZOOM`); w skali kraju cieniowanie nizin jest jednolicie szare i tylko zasłania podkład.
+  Domyślnie relief jest rysowany od poziomu przybliżenia 10 (`RELIEF_MIN_ZOOM`), bo w skali kraju cieniowanie nizin jest jednolicie szare i tylko zasłania podkład.
+  Próg zmienisz w panelu („Pokaż relief od poziomu”), a gdy relief jest ukryty z powodu oddalenia, na mapie pojawia się wskazówka z przyciskiem „Przybliż”.
+- Kafle, które zawiodą chwilowo, są ponawiane (po 0,5 s i 1,2 s); status w panelu dotyczy kafli widocznych w bieżącym widoku.
 - Domyślnie relief jest mieszany przez **mnożenie** (zachowuje kolory podkładu); suwak przezroczystości (0–100%) reguluje siłę.
 - Tryb **Porównanie** z przeciąganą linią podziału (relief po prawej, podkład po lewej).
 - **Pasek ładowania** u góry ekranu z procentami (wszystkie warstwy razem). Pojawia się, gdy ładowanie trwa dłużej niż ułamek sekundy, i znika po wczytaniu całej mapy.

@@ -87,6 +87,10 @@ footer a{color:var(--accent)}
 #loadTxt::before{content:"";width:12px;height:12px;border-radius:50%;border:2px solid var(--line);border-top-color:var(--accent);animation:spin .8s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
 @media (prefers-reduced-motion:reduce){#loadTxt::before{animation:none}#loader i{transition:none}}
+#zoomHint{position:fixed;top:52px;left:50%;transform:translateX(-50%);z-index:95;display:none;align-items:center;gap:10px;padding:6px 8px 6px 14px;max-width:calc(100vw - 24px);background:var(--panel);border:1px solid var(--warn);border-radius:999px;font-size:12px;pointer-events:none}   /* nie blokuje przeciągania mapy pod spodem */
+#zoomHint.on{display:flex}
+#zoomHint button{pointer-events:auto;padding:3px 12px;border:0;border-radius:999px;background:var(--accent);color:#06201c;font-weight:600;white-space:nowrap}
+@media (min-width:701px){#panel:not(.hidden)~#loadTxt,#panel:not(.hidden)~#zoomHint{left:calc(364px + (100vw - 364px) / 2)}}   /* środek wolnego obszaru obok panelu */
 #zoomCtl{position:fixed;right:12px;top:12px;z-index:100;display:flex;flex-direction:column;border:1px solid var(--line);border-radius:10px;overflow:hidden;background:var(--panel-solid)}
 #zoomCtl button{width:38px;height:38px;border:0;background:none;font-size:20px}
 #zoomCtl button+button{border-top:1px solid var(--line)}
@@ -126,6 +130,9 @@ footer a{color:var(--accent)}
     <h2>Relief LIDAR</h2>
     <div class="opts" id="reliefList"></div>
     <p class="status" id="reliefStatus"></p>
+    <label class="row" title="Poziom przybliżenia: 6 ≈ cały kraj, 8 ≈ województwo, 10 ≈ powiat, 13 ≈ miasto">Pokaż relief od poziomu
+      <select id="minZoom" style="margin-left:auto;padding:4px 8px;background:var(--field);border:1px solid var(--line);border-radius:6px"></select>
+    </label>
     <label class="check"><input type="checkbox" id="multChk"> Mnożenie (zachowaj kolory podkładu)</label>
     <label class="row">Przezroczystość
       <input id="opacity" type="range" min="0" max="100" value="70">
@@ -176,6 +183,7 @@ footer a{color:var(--accent)}
 
 <div id="loader" role="progressbar" aria-label="Ładowanie mapy" aria-valuemin="0" aria-valuemax="100" aria-valuenow="100"><i></i></div>
 <div id="loadTxt"></div>
+<div id="zoomHint"><span></span><button type="button" id="zoomHintBtn">Przybliż</button></div>
 <div id="zoomCtl"><button id="zin" aria-label="Przybliż">+</button><button id="zout" aria-label="Oddal">−</button></div>
 <div id="coords">Przesuń kursor nad mapę</div>
 <div id="attr"></div>
@@ -215,13 +223,15 @@ const LABELS_LAYER = {
   attribution: 'Nazwy: Esri',
 };
 
-// Poniżej tego poziomu przybliżenia relief się nie wyświetla: w skali kraju cieniowanie nizin
-// jest jednolicie szare i tylko zasłania podkład (1 poziom ≈ 2× większa skala).
+// Domyślny poziom przybliżenia, od którego rysujemy relief (do zmiany w panelu). W skali kraju
+// cieniowanie nizin jest jednolicie szare i tylko zasłania podkład (1 poziom ≈ 2× większa skala).
 const RELIEF_MIN_ZOOM = 10;
+// Chwilowo niedostępny kafel ponawiamy po tylu ms (kolejne próby), zanim uznamy go za błąd.
+const RETRY_DELAYS = [500, 1200];
 const RELIEF_LAYERS = [
-  { id: 'hillshade', name: 'Cieniowanie terenu (hillshade)', maxNativeZoom: 20, minZoom: RELIEF_MIN_ZOOM,
+  { id: 'hillshade', name: 'Cieniowanie terenu (hillshade)', maxNativeZoom: 20,
     wms: { url: GUGIK + 'NMT/GRID1/WMS/ShadedRelief', layers: 'Raster' }, attribution: GUGIK_ATTR + ' – NMT' },
-  { id: 'skyview', name: 'Widoczność nieba (SVF / SkyView)', maxNativeZoom: 20, minZoom: RELIEF_MIN_ZOOM,
+  { id: 'skyview', name: 'Widoczność nieba (SVF / SkyView)', maxNativeZoom: 20,
     wms: { url: GUGIK + 'NMT/GRID1/WMS/SkyView', layers: 'Raster' }, attribution: GUGIK_ATTR + ' – NMT' },
 ];
 
@@ -324,22 +334,34 @@ class TileLayer {
   constructor(o) {
     Object.assign(this, { opacity: 1, maxNativeZoom: 19, minNativeZoom: 0, minZoom: 0, zIndex: 1, visible: true, onstats: null }, o);
     this.tiles = new Map();
-    this.stats = { ok: 0, err: 0 };
     this.el = h('div', { class: 'layer' });
     this.el.style.zIndex = this.zIndex;
     this.el.style.opacity = this.opacity;
   }
   setOpacity(v) { this.opacity = v; this.el.style.opacity = v; }
   setClip(x) { this.el.style.clipPath = x == null ? '' : `inset(0 0 0 ${x}px)`; }
-  resetStats() { this.stats = { ok: 0, err: 0 }; this.onstats && this.onstats(this); }
+  /** Kafle aktualnie obecne w widoku: wczytane / zakończone błędem (po ponowieniach). */
+  get stats() {
+    let ok = 0, err = 0;
+    for (const t of this.tiles.values()) { if (t.failed) err++; else if (t.loaded) ok++; }
+    return { ok, err };
+  }
   _create(z, x, y, key) {
     const img = new Image();
     img.className = 'tile'; img.alt = ''; img.draggable = false; img.decoding = 'async';
-    const t = { z, x, y, img, done: false };
-    img.onload = () => { t.done = true; img.classList.add('ok'); this.stats.ok++; this.map.tileEnd(false); this._changed(); };
-    img.onerror = () => { t.done = true; this.stats.err++; this.map.tileEnd(false); this._changed(); };
+    const t = { z, x, y, img, done: false, tries: 0, timer: 0 };
+    const src = this.url(z, x, y);
+    img.onload = () => { t.done = t.loaded = true; img.classList.add('ok'); this.map.tileEnd(false); this._changed(); };
+    img.onerror = () => {
+      if (t.tries < RETRY_DELAYS.length) {   // chwilowy błąd serwera: ponów, zamiast zostawiać dziurę w mapie
+        const wait = RETRY_DELAYS[t.tries++];
+        t.timer = setTimeout(() => { img.src = src + (src.includes('?') ? '&' : '?') + '_retry=' + t.tries; }, wait);
+        return;
+      }
+      t.done = t.failed = true; this.map.tileEnd(false); this._changed();
+    };
     this.map.tileStart();
-    img.src = this.url(z, x, y);
+    img.src = src;
     this.el.appendChild(img);
     this.tiles.set(key, t);
     return t;
@@ -347,6 +369,7 @@ class TileLayer {
   _changed() { this.map && this.map.render(); this.onstats && this.onstats(this); }
   _drop(key, t) {
     t.img.onload = t.img.onerror = null;
+    clearTimeout(t.timer);
     if (!t.done) { t.done = true; this.map.tileEnd(true); }   // anulowany w locie: nie liczy się do postępu
     t.img.removeAttribute('src'); t.img.remove(); this.tiles.delete(key);
   }
@@ -434,6 +457,10 @@ class TileMap {
     this.center = { lat: clamp(lat, -84, 84), lng };
     this.z = z;
     this.render();
+  }
+  zoomTo(z, pt) {
+    pt = pt || { x: this.size.w / 2, y: this.size.h / 2 };
+    this._setAnchored(this.containerToLL(pt.x, pt.y), pt, z);
   }
   setView(lat, lng, z) { this.center = { lat, lng }; this.z = clamp(z, this.minZoom, this.maxZoom); this.render(); }
   zoomBy(dz, pt) {
@@ -529,7 +556,7 @@ class TileMap {
 /* =====================================================================
  *  Aplikacja
  * ===================================================================== */
-const prefs = Object.assign({ base: 'esri', relief: 'hillshade', opacity: 70, mode: 'blend', multiply: true, labels: true }, store.get('prefs', {}));
+const prefs = Object.assign({ base: 'esri', relief: 'hillshade', opacity: 70, mode: 'blend', multiply: true, labels: true, minZoom: RELIEF_MIN_ZOOM }, store.get('prefs', {}));
 const savePrefs = () => store.set('prefs', prefs);
 let customWms = store.get('customWms', []);
 
@@ -550,7 +577,7 @@ const writeHash = debounce(() => {
 let baseLayer = null, reliefLayer = null;
 const findDef = (list, id) => list.find((d) => d.id === id);
 const allRelief = () => [...RELIEF_LAYERS, ...customWms.map((c) => ({
-  id: c.id, name: c.name, maxNativeZoom: 20, minZoom: RELIEF_MIN_ZOOM, custom: true, attribution: 'Własne źródło WMS',
+  id: c.id, name: c.name, maxNativeZoom: 20, custom: true, attribution: 'Własne źródło WMS',
   wms: { url: c.url, layers: c.layers, version: c.version },
 }))];
 
@@ -621,10 +648,15 @@ function setBase(id) {
 
 const reliefStatus = $('#reliefStatus');
 function showReliefStats() {
+  const hint = $('#zoomHint');
+  hint.classList.toggle('on', !!(reliefLayer && reliefLayer.tooFar));
   if (!reliefLayer) { reliefStatus.textContent = ''; reliefStatus.className = 'status'; return; }
   const { ok, err } = reliefLayer.stats;
   let text = '', cls = 'status';
-  if (reliefLayer.tooFar) { text = `Przybliż mapę (poziom ${RELIEF_MIN_ZOOM} lub więcej), aby zobaczyć relief – np. wybierz miasto z listy.`; cls += ' hint'; }
+  if (reliefLayer.tooFar) {
+    text = `Relief jest ukryty przy tym oddaleniu (widoczny od poziomu ${prefs.minZoom}).`; cls += ' hint';
+    hint.firstElementChild.textContent = `Relief LIDAR jest ukryty przy tym oddaleniu (widoczny od poziomu ${prefs.minZoom}).`;
+  }
   else if (err && !ok) { text = `⚠ Serwer nie zwrócił kafli (błędy: ${err}). Sprawdź adres usługi i nazwę warstwy albo przybliż mapę.`; cls += ' warn'; }
   else if (err) { text = `⚠ Część kafli się nie załadowała (${err} z ${ok + err}).`; cls += ' warn'; }
   else if (ok) { text = `✓ Wczytano kafli: ${ok}`; cls += ' ok'; }
@@ -638,6 +670,7 @@ function setRelief(id) {
   const def = findDef(allRelief(), id);
   if (def) {
     reliefLayer = makeLayer(def, 2);
+    reliefLayer.minZoom = prefs.minZoom;
     reliefLayer.setOpacity(prefs.mode === 'swipe' ? 1 : prefs.opacity / 100);
     reliefLayer.onstats = scheduleStats;
     map.addLayer(reliefLayer);
@@ -706,6 +739,14 @@ opacity.addEventListener('input', () => {
   if (reliefLayer && prefs.mode !== 'swipe') reliefLayer.setOpacity(prefs.opacity / 100);
   savePrefs();
 });
+const minZoomSel = $('#minZoom');
+for (let n = 6; n <= 14; n++) minZoomSel.append(h('option', { value: String(n), text: n === RELIEF_MIN_ZOOM ? `${n} (domyślnie)` : String(n) }));
+minZoomSel.value = String(clamp(+prefs.minZoom || RELIEF_MIN_ZOOM, 6, 14)); prefs.minZoom = +minZoomSel.value;
+minZoomSel.addEventListener('change', () => {
+  prefs.minZoom = +minZoomSel.value; savePrefs();
+  if (reliefLayer) { reliefLayer.minZoom = prefs.minZoom; map.render(); showReliefStats(); }
+});
+$('#zoomHintBtn').addEventListener('click', () => map.zoomTo(Math.max(map.z, prefs.minZoom)));
 $('#multChk').checked = prefs.multiply;
 $('#multChk').addEventListener('change', (e) => { prefs.multiply = e.target.checked; savePrefs(); applySwipe(); });
 function setMode(m) {

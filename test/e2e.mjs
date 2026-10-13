@@ -51,7 +51,7 @@ const bboxToTile = (bbox) => { const [x0, , , y1] = bbox.split(',').map(Number);
 const browser = await chromium.launch();
 const ctx = await browser.newContext({ viewport: { width: 1280, height: 800 }, acceptDownloads: true });
 const log = { esri: [], osm: [], wms: [], elev: [], custom: [], other: [] };
-const mode = { gugikFail: false, esriFail: false, delay: 0 };   // delay: opóźnienie odpowiedzi GUGiK [ms]
+const mode = { gugikFail: false, esriFail: false, delay: 0, failFirst: 0, attempts: new Map() };   // failFirst: tyle pierwszych prób każdego kafla GUGiK kończy się błędem 500   // delay: opóźnienie odpowiedzi GUGiK [ms]
 const CORS = { 'access-control-allow-origin': '*' };
 await ctx.route(/^https?:/, async (route) => {
   const u = new URL(route.request().url());
@@ -63,7 +63,16 @@ await ctx.route(/^https?:/, async (route) => {
     return fulfill(u.pathname.includes('/Reference/') ? TILES.labels : TILES.esri);
   }
   if (u.host === 'tile.openstreetmap.org') { log.osm.push(u); return fulfill(TILES.osm); }
-  if (u.host === 'mapy.geoportal.gov.pl') { log.wms.push(u); return mode.gugikFail ? fulfill('boom', 'text/plain', 500) : fulfill(TILES.relief); }
+  if (u.host === 'mapy.geoportal.gov.pl') {
+    log.wms.push(u);
+    if (mode.failFirst) {
+      const sp = new URLSearchParams(u.search); sp.delete('_retry');
+      const k = u.pathname + '?' + sp, n = (mode.attempts.get(k) || 0) + 1;
+      mode.attempts.set(k, n);
+      if (n <= mode.failFirst) return fulfill('boom', 'text/plain', 500);
+    }
+    return mode.gugikFail ? fulfill('boom', 'text/plain', 500) : fulfill(TILES.relief);
+  }
   if (u.host === 'services.gugik.gov.pl') { log.elev.push(u); return fulfill('123.4', 'text/plain'); }
   if (u.host === 'example.test') {
     if (/GetCapabilities/i.test(u.search)) return fulfill('<?xml version="1.0"?><WMS_Capabilities xmlns="http://www.opengis.net/wms"><Capability><Layer><Title>root</Title><Layer><Name>slope</Name></Layer><Layer><Name>aspect</Name></Layer></Layer></Capability></WMS_Capabilities>', 'text/xml');
@@ -257,7 +266,7 @@ console.log('\n[7] Błędy serwera GUGiK');
 {
   await page.evaluate(() => LidarPL.map.setView(53.0, 18.0, 13)); await settle(300);
   mode.gugikFail = true;
-  await page.check('input[name=relief][value=none]'); await page.check('input[name=relief][value=hillshade]'); await settle(700);
+  await page.check('input[name=relief][value=none]'); await page.check('input[name=relief][value=hillshade]'); await settle(3200);   // 3 próby: 0 + 0,5 s + 1,2 s
   const st = await page.textContent('#reliefStatus');
   check('status ostrzega, gdy serwer nie zwraca kafli', /Serwer nie zwrócił kafli/.test(st), st);
   mode.gugikFail = false;
@@ -340,7 +349,7 @@ console.log('\n[10] Nazwy miejscowości, próg przybliżenia, mnożenie, lista m
   await page.evaluate(() => LidarPL.map.setView(52.0, 19.0, 8)); await settle(500);
   const farReq = log.wms.slice(n0).filter((u) => u.pathname.endsWith('/ShadedRelief'));
   check('poniżej progu (z8): brak zapytań o relief, warstwa ukryta', farReq.length === 0 && (await style(2, 'visibility')) === 'hidden');
-  check('poniżej progu: podpowiedź zamiast „szarej strony”', /Przybliż mapę \(poziom 10/.test(await page.textContent('#reliefStatus')), await page.textContent('#reliefStatus'));
+  check('poniżej progu: podpowiedź zamiast „szarej strony”', /ukryty przy tym oddaleniu \(widoczny od poziomu 10\)/.test(await page.textContent('#reliefStatus')), await page.textContent('#reliefStatus'));
   check('poniżej progu nazwy miejscowości nadal widać', await hasLayer(3) && (await style(3, 'visibility')) !== 'hidden');
   await page.evaluate(() => LidarPL.map.setView(52.0, 19.0, 9.4)); await settle(300);
   check('z9,4 (zaokrągla do 9): nadal ukryty', (await style(2, 'visibility')) === 'hidden');
@@ -369,7 +378,7 @@ console.log('\n[10] Nazwy miejscowości, próg przybliżenia, mnożenie, lista m
 
   // diagnostyka podkładu: serwer Esri nie odpowiada
   mode.esriFail = true;
-  await page.check('input[name=base][value=osm]'); await page.check('input[name=base][value=esri]'); await settle(700);
+  await page.check('input[name=base][value=osm]'); await page.check('input[name=base][value=esri]'); await settle(3200);   // 3 próby: 0 + 0,5 s + 1,2 s
   check('gdy podkład się nie wczytuje, panel to pokazuje', /Podkład nie wczytał żadnych kafli/.test(await page.textContent('#baseStatus')), await page.textContent('#baseStatus'));
   await shot('08-base-failure');
   mode.esriFail = false;
@@ -411,10 +420,103 @@ console.log('\n[11] Pasek ładowania');
   check('po szybkich ruchach (anulowane kafle) nic nie „wisi”', !a.on && a.load.pending === 0 && a.load.total === 0 && a.load.done === 0, JSON.stringify(a));
 
   mode.delay = 0; mode.esriFail = true;   // błędy też kończą ładowanie
-  await page.evaluate(() => LidarPL.map.setView(53.0, 22.0, 13)); await sleep(900);
+  await page.evaluate(() => LidarPL.map.setView(53.0, 22.0, 13)); await sleep(3200);
   a = await loader();
   check('kafle zakończone błędem nie blokują paska', !a.on && a.load.pending === 0, JSON.stringify(a));
   mode.esriFail = false;
+}
+
+console.log('\n[12] Podróż: oddalenie z Krakowa, przesunięcie do Warszawy, przybliżenie');
+{
+  await page.goto('about:blank');
+  await page.goto(PAGE + '#12.00/50.06470/19.94500'); await settle(300);
+  await page.check('input[name=relief][value=hillshade]'); await settle(300);
+  mode.delay = 300;   // wolny serwer GUGiK
+  const reliefState = () => ev(() => {
+    const l = LidarPL.map.layers.find((x) => x.zIndex === 2);
+    const imgs = [...l.el.querySelectorAll('.tile')];
+    const ok = imgs.filter((i) => i.classList.contains('ok'));
+    const w = innerWidth, h = innerHeight;
+    const rects = ok.map((i) => i.getBoundingClientRect());
+    const covered = [[w * 0.45, h * 0.3], [w * 0.9, h * 0.5], [w * 0.6, h * 0.9], [w / 2, h / 2]].every(([x, y]) => rects.some((r) => x >= r.left && x <= r.right && y >= r.top && y <= r.bottom));
+    return { z: LidarPL.map.z, hidden: getComputedStyle(l.el).visibility === 'hidden', tiles: imgs.length, ok: ok.length, covered, pending: LidarPL.map.loading.pending, zooms: [...new Set(l.tiles.values().map((t) => t.z))] };
+  });
+  await settle(1200);
+  let st = await reliefState();
+  check('Kraków z12: relief wczytany i pokrywa widok', !st.hidden && st.ok > 0 && st.covered, JSON.stringify(st));
+
+  for (let i = 0; i < 10; i++) { await page.mouse.move(700, 400); await page.mouse.wheel(0, 100); await sleep(60); }
+  await settle(500);
+  st = await reliefState();
+  check('po oddaleniu (z7) relief jest zdjęty, a nie zostawia starych kafli', st.z < 8 && st.hidden && st.tiles === 0, JSON.stringify(st));
+
+  // przeciągnięcie Warszawy na środek ekranu
+  const wp = await ev(() => LidarPL.map.llToContainer(52.2297, 21.0122));
+  await page.mouse.move(wp.x, wp.y); await page.mouse.down(); await page.mouse.move(700, 400, { steps: 8 }); await page.mouse.up(); await settle(200);
+  const n0 = log.wms.length;
+  for (let i = 0; i < 10; i++) { await page.mouse.move(700, 400); await page.mouse.wheel(0, -100); await sleep(60); }
+  await settle(2500);
+  st = await reliefState();
+  v = await view();
+  check('przy Warszawie z12: środek widoku to Warszawa', near(v.z, 12, 1e-9) && near(v.lat, 52.2297, 0.05) && near(v.lng, 21.0122, 0.05), JSON.stringify(v));
+  check('relief dla Warszawy jest pobrany, widoczny i pokrywa widok', !st.hidden && st.ok > 0 && st.covered && st.pending === 0, JSON.stringify(st));
+  const req = log.wms.slice(n0).filter((u) => u.pathname.endsWith('/ShadedRelief')).map((u) => bboxToTile(u.searchParams.get('BBOX')));
+  const finalImg = await ev(() => LidarPL.map.layers.find((l) => l.zIndex === 1)).catch(() => null);
+  const needed = await ev(() => [...LidarPL.map.layers.find((l) => l.zIndex === 1).tiles.keys()]);
+  const reqKeys = new Set(req.map((t) => `${t.z}/${t.x}/${t.y}`));
+  check('zapytania o relief obejmują wszystkie kafle widoku Warszawy', needed.length > 0 && needed.every((k) => reqKeys.has(k)), `brakuje: ${needed.filter((k) => !reqKeys.has(k)).join(', ')}`);
+  check('w warstwie nie zostały kafle z innego poziomu (stare)', st.zooms.length === 1 && st.zooms[0] === 12, JSON.stringify(st.zooms));
+  mode.delay = 0;
+  await shot('10-warszawa');
+}
+
+console.log('\n[13] Wskazówka o ukrytym reliefie, próg przybliżenia, ponawianie kafli');
+{
+  await page.goto('about:blank');
+  await page.goto(PAGE + '#12.00/52.22970/21.01220'); await settle(300);
+  await page.check('input[name=relief][value=hillshade]'); await settle(600);
+  const chip = () => ev(() => { const e = document.querySelector('#zoomHint'); return { on: getComputedStyle(e).display !== 'none', txt: e.textContent }; });
+  const rel = () => ev(() => { const l = LidarPL.map.layers.find((x) => x.zIndex === 2); return { ok: l.el.querySelectorAll('.tile.ok').length, stats: { ...l.stats }, hidden: getComputedStyle(l.el).visibility === 'hidden' }; });
+  check('relief widoczny: wskazówki brak', !(await chip()).on);
+
+  await page.evaluate(() => LidarPL.map.setView(52.2297, 21.0122, 8)); await settle(300);
+  let c = await chip();
+  check('po oddaleniu na mapie pojawia się wskazówka z progiem', c.on && /ukryty przy tym oddaleniu \(widoczny od poziomu 10\)/.test(c.txt), JSON.stringify(c));
+  await shot('11-hint');
+  let n0 = log.wms.length;
+  await page.click('#zoomHintBtn'); await settle(900);
+  v = await view();
+  check('„Przybliż” przechodzi do progu i pobiera relief', near(v.z, 10, 1e-9) && log.wms.slice(n0).some((u) => u.pathname.endsWith('/ShadedRelief')) && !(await chip()).on && (await rel()).ok > 0, JSON.stringify(v));
+
+  await page.selectOption('#minZoom', '7');
+  await page.evaluate(() => LidarPL.map.setView(52.2297, 21.0122, 7.2)); await settle(800);
+  check('próg 7: relief widoczny już na z7,2, bez wskazówki', !(await chip()).on && (await rel()).ok > 0 && !(await rel()).hidden, JSON.stringify(await rel()));
+  await page.selectOption('#minZoom', '12');
+  await page.evaluate(() => LidarPL.map.setView(52.2297, 21.0122, 11)); await settle(300);
+  c = await chip();
+  check('próg 12: na z11 relief ukryty, wskazówka podaje 12', c.on && /od poziomu 12\)/.test(c.txt) && (await rel()).hidden, JSON.stringify(c));
+  await page.reload(); await settle(500);
+  check('próg przetrwał odświeżenie strony', (await page.inputValue('#minZoom')) === '12');
+  await page.selectOption('#minZoom', '10');
+
+  // ponawianie: serwer odrzuca 2 pierwsze próby każdego kafla, trzecia przechodzi
+  mode.failFirst = 2; mode.attempts.clear();
+  n0 = log.wms.length;
+  await page.evaluate(() => LidarPL.map.setView(51.1079, 17.0385, 13)); await sleep(700);
+  const mid = await ev(() => ({ pending: LidarPL.map.loading.pending, on: document.querySelector('#loadTxt').classList.contains('on') }));
+  check('w trakcie ponawiania kafle są „w toku” (pasek ładowania działa)', mid.pending > 0 && mid.on, JSON.stringify(mid));
+  await settle(3500);
+  const r = await rel();
+  const retries = log.wms.slice(n0).map((u) => u.searchParams.get('_retry'));
+  check('chwilowe błędy: kafle ostatecznie się wczytały', r.ok > 0 && r.stats.err === 0, JSON.stringify(r));
+  check('ponowienia mają parametr _retry=1 i _retry=2', retries.includes('1') && retries.includes('2'), [...new Set(retries)].join(','));
+  check('status: „Wczytano”, bez ostrzeżenia', /Wczytano kafli/.test(await page.textContent('#reliefStatus')), await page.textContent('#reliefStatus'));
+
+  // błąd trwały (więcej niż liczba ponowień) kończy się ostrzeżeniem
+  mode.failFirst = 3; mode.attempts.clear();
+  await page.evaluate(() => LidarPL.map.setView(54.352, 18.6466, 13)); await settle(3500);
+  check('błąd trwały: po ponowieniach ostrzeżenie dotyczy tego, co jest w widoku (nie liczy starych kafli)', /Serwer nie zwrócił kafli/.test(await page.textContent('#reliefStatus')), await page.textContent('#reliefStatus'));
+  mode.failFirst = 0;
 }
 
 check('brak błędów JS w konsoli', errors.length === 0, errors.join(' | '));
