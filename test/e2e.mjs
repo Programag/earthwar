@@ -33,6 +33,7 @@ const TILES = {
   esri: png((x, y) => edge(x, y) ? [20, 40, 20, 255] : [50 + (x >> 2), 110 + (y >> 3), 60, 255]),
   osm: png((x, y) => edge(x, y) ? [90, 80, 60, 255] : [230, 224, 205, 255]),
   relief: png((x, y) => edge(x, y) ? [0, 0, 0, 255] : [(x + y) >> 1, (x + y) >> 1, (x + y) >> 1, 255]),
+  labels: png((x, y) => (y % 32 < 3 && x > 40 && x < 200) ? [255, 255, 255, 255] : [0, 0, 0, 0]),
   custom: png((x, y) => edge(x, y) ? [80, 0, 80, 255] : [170, 60, 190, 255]),
 };
 
@@ -50,12 +51,16 @@ const bboxToTile = (bbox) => { const [x0, , , y1] = bbox.split(',').map(Number);
 const browser = await chromium.launch();
 const ctx = await browser.newContext({ viewport: { width: 1280, height: 800 }, acceptDownloads: true });
 const log = { esri: [], osm: [], wms: [], elev: [], custom: [], other: [] };
-const mode = { gugikFail: false };
+const mode = { gugikFail: false, esriFail: false };
 const CORS = { 'access-control-allow-origin': '*' };
 await ctx.route(/^https?:/, (route) => {
   const u = new URL(route.request().url());
   const fulfill = (body, type = 'image/png', status = 200) => route.fulfill({ status, body, contentType: type, headers: CORS });
-  if (u.host === 'server.arcgisonline.com') { log.esri.push(u); return fulfill(TILES.esri); }
+  if (u.host === 'server.arcgisonline.com') {
+    log.esri.push(u);
+    if (mode.esriFail) return fulfill('boom', 'text/plain', 500);
+    return fulfill(u.pathname.includes('/Reference/') ? TILES.labels : TILES.esri);
+  }
   if (u.host === 'tile.openstreetmap.org') { log.osm.push(u); return fulfill(TILES.osm); }
   if (u.host === 'mapy.geoportal.gov.pl') { log.wms.push(u); return mode.gugikFail ? fulfill('boom', 'text/plain', 500) : fulfill(TILES.relief); }
   if (u.host === 'services.gugik.gov.pl') { log.elev.push(u); return fulfill('123.4', 'text/plain'); }
@@ -73,6 +78,9 @@ const shot = async (name) => { if (SHOTS) await page.screenshot({ path: path.joi
 const ev = (fn, arg) => page.evaluate(fn, arg);
 const settle = async (ms = 400) => { await sleep(ms); await ev(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))); };
 const view = () => ev(() => ({ z: LidarPL.map.z, lat: LidarPL.map.center.lat, lng: LidarPL.map.center.lng }));
+const tileKey = (u) => { const [z, y, x] = u.pathname.split('/').slice(-3); return `${z}/${x}/${y}`; };
+const isImagery = (u) => u.pathname.includes('/World_Imagery/');
+const isLabels = (u) => u.pathname.includes('/Reference/World_Boundaries_and_Places/');
 const llAt = (x, y) => ev(([x, y]) => LidarPL.map.containerToLL(x, y), [x, y]);
 
 /* =========================================================== */
@@ -80,12 +88,14 @@ console.log('\n[1] Start i kafle');
 await page.goto(PAGE);
 await settle(800);
 let v = await view();
-check('widok startowy: Polska, zoom 7', near(v.z, 7, 1e-9) && near(v.lat, 52, 1e-6) && near(v.lng, 19.4, 1e-6), JSON.stringify(v));
-const esriSet = new Set(log.esri.map((u) => { const [, , , , , , , z, y, x] = u.pathname.split('/'); return `${z}/${x}/${y}`; }));
+check('widok startowy: Kraków, zoom 12', near(v.z, 12, 1e-9) && near(v.lat, 50.0647, 1e-6) && near(v.lng, 19.945, 1e-6), JSON.stringify(v));
+const esriSet = new Set(log.esri.filter(isImagery).map(tileKey));
+const labelSet = new Set(log.esri.filter(isLabels).map(tileKey));
 const wmsHill = log.wms.filter((u) => u.pathname.endsWith('/NMT/GRID1/WMS/ShadedRelief'));
 const wmsSet = new Set(wmsHill.map((u) => { const t = bboxToTile(u.searchParams.get('BBOX')); return `${t.z}/${t.x}/${t.y}`; }));
 check('pobrano kafle Esri', esriSet.size >= 4, `n=${esriSet.size}`);
 check('pobrano kafle ShadedRelief (WMS)', wmsSet.size >= 4, `n=${wmsSet.size}`);
+check('pobrano kafle z nazwami miejscowości (Esri Reference) dla tego samego widoku', labelSet.size === esriSet.size && [...esriSet].every((k) => labelSet.has(k)), `img=${esriSet.size} labels=${labelSet.size}`);
 check('BBOX każdego kafla WMS odpowiada kaflowi XYZ tego samego widoku', esriSet.size === wmsSet.size && [...esriSet].every((k) => wmsSet.has(k)), `esri=${[...esriSet]} wms=${[...wmsSet]}`);
 const p = wmsHill[0].searchParams;
 check('parametry WMS 1.3.0 / EPSG:3857 / 256px',
@@ -94,7 +104,7 @@ check('parametry WMS 1.3.0 / EPSG:3857 / 256px',
   wmsHill[0].search);
 const cover = await ev(() => {
   const w = innerWidth, h = innerHeight;
-  const rects = [...LidarPL.map.layers[0].el.querySelectorAll('.tile.ok')].map((i) => i.getBoundingClientRect());
+  const rects = [...LidarPL.map.layers.find((l) => l.zIndex === 1).el.querySelectorAll('.tile.ok')].map((i) => i.getBoundingClientRect());
   return [[1, 1], [w - 2, 1], [1, h - 2], [w - 2, h - 2], [w / 2, h / 2]].every(([x, y]) => rects.some((r) => x >= r.left && x <= r.right && y >= r.top && y <= r.bottom));
 });
 check('kafle podkładu pokrywają cały ekran', cover);
@@ -116,14 +126,14 @@ console.log('\n[2] Gesty: przeciąganie, kółko, przyciski, klawiatura');
   check('kółko myszy przybliża (0,5 poziomu na „ząbek”)', near(z1 - z0, 0.5, 1e-9), `dz=${z1 - z0}`);
   check('zoom kółkiem trzyma punkt pod kursorem', near(anchor.lat, anchor2.lat, 1e-7) && near(anchor.lng, anchor2.lng, 1e-7));
   await page.click('#zin'); await settle(100);
-  check('przycisk + zaokrągla do pełnego poziomu (7,5 → 8)', near((await view()).z, 8, 1e-9), String((await view()).z));
+  check('przycisk + zaokrągla do pełnego poziomu (12,5 → 13)', near((await view()).z, 13, 1e-9), String((await view()).z));
   await page.click('#zout'); await settle(100);
-  check('przycisk − oddala o poziom', near((await view()).z, 7, 1e-9));
+  check('przycisk − oddala o poziom', near((await view()).z, 12, 1e-9));
   await page.focus('#map'); const c0 = await view(); await page.keyboard.press('ArrowLeft'); await settle(100);
   const c1 = await view();
   check('klawisz ← przesuwa mapę na zachód', c1.lng < c0.lng && near(c1.lat, c0.lat, 1e-6), `${c0.lng} → ${c1.lng}`);
   await page.keyboard.press('+'); await settle(100);
-  check('klawisz + przybliża', near((await view()).z, 8, 1e-9));
+  check('klawisz + przybliża', near((await view()).z, 13, 1e-9));
 }
 
 console.log('\n[3] Zmiana warstw, przezroczystość, hash');
@@ -146,7 +156,7 @@ console.log('\n[3] Zmiana warstw, przezroczystość, hash');
   const hash = await ev(() => location.hash);
   check('hash URL odzwierciedla widok', /^#15\.00\/50\.0\d+\/19\.9\d+$/.test(hash), hash);
   await page.check('input[name=relief][value=none]'); await settle(200);
-  check('„Brak” usuwa warstwę reliefu', await ev(() => LidarPL.map.layers.length === 1));
+  check('„Brak” usuwa warstwę reliefu', await ev(() => !LidarPL.map.layers.some((l) => l.zIndex === 2)));
   await page.check('input[name=relief][value=hillshade]'); await settle(500);
   await shot('02-krakow-hillshade');
 }
@@ -270,7 +280,7 @@ console.log('\n[8] Własne źródło WMS');
   await page.reload(); await settle(600);
   check('własne źródło przetrwało odświeżenie i jest aktywne', await page.isChecked('input[name=relief][value^=custom-]'));
   await page.click('#reliefList .x'); await settle(300);
-  check('usunięcie własnego źródła', (await page.locator('input[name=relief][value^=custom-]').count()) === 0 && await ev(() => LidarPL.map.layers.length === 1));
+  check('usunięcie własnego źródła', (await page.locator('input[name=relief][value^=custom-]').count()) === 0 && await ev(() => !LidarPL.map.layers.some((l) => l.zIndex === 2)));
 }
 
 console.log('\n[9] Hash startowy, PL-1992, telefon');
@@ -302,6 +312,68 @@ console.log('\n[9] Hash startowy, PL-1992, telefon');
   check('telefon: brak poziomego przewijania', noOverflow);
   if (SHOTS) await mp.screenshot({ path: path.join(SHOTS, '06-mobile-panel.png') });
   await mob.close();
+}
+
+console.log('\n[10] Nazwy miejscowości, próg przybliżenia, mnożenie, lista miast, diagnostyka podkładu');
+{
+  await page.goto('about:blank');
+  await page.goto(PAGE + '#12.00/50.06470/19.94500'); await settle(300);
+  await page.check('input[name=relief][value=hillshade]'); await settle(500);   // stan z poprzednich sekcji: „Brak”
+  const hasLayer = (z) => ev((z) => LidarPL.map.layers.some((l) => l.zIndex === z), z);
+  const style = (z, prop) => ev(([z, prop]) => getComputedStyle(LidarPL.map.layers.find((l) => l.zIndex === z).el)[prop], [z, prop]);
+
+  // nazwy miejscowości
+  check('nazwy miejscowości: warstwa nad reliefem (z-index 3), pole zaznaczone', await hasLayer(3) && await page.isChecked('#labelsChk'));
+  await page.uncheck('#labelsChk'); await settle(100);
+  check('odznaczenie ukrywa nazwy', !(await hasLayer(3)));
+  await page.check('#labelsChk'); await settle(300);
+  check('zaznaczenie przywraca nazwy', await hasLayer(3));
+  await page.check('input[name=base][value=osm]'); await settle(200);
+  check('OSM ma własne podpisy: nazwy Esri wyłączone, pole nieaktywne', !(await hasLayer(3)) && await page.isDisabled('#labelsChk'));
+  await page.check('input[name=base][value=esri]'); await settle(300);
+  check('powrót na Esri przywraca nazwy', await hasLayer(3) && !(await page.isDisabled('#labelsChk')));
+  await page.evaluate(() => LidarPL.map.setView(50.0647, 19.945, 13)); await shot('07-labels-multiply');
+
+  // próg przybliżenia reliefu
+  let n0 = log.wms.length;
+  await page.evaluate(() => LidarPL.map.setView(52.0, 19.0, 8)); await settle(500);
+  const farReq = log.wms.slice(n0).filter((u) => u.pathname.endsWith('/ShadedRelief'));
+  check('poniżej progu (z8): brak zapytań o relief, warstwa ukryta', farReq.length === 0 && (await style(2, 'visibility')) === 'hidden');
+  check('poniżej progu: podpowiedź zamiast „szarej strony”', /Przybliż mapę \(poziom 10/.test(await page.textContent('#reliefStatus')), await page.textContent('#reliefStatus'));
+  check('poniżej progu nazwy miejscowości nadal widać', await hasLayer(3) && (await style(3, 'visibility')) !== 'hidden');
+  await page.evaluate(() => LidarPL.map.setView(52.0, 19.0, 9.4)); await settle(300);
+  check('z9,4 (zaokrągla do 9): nadal ukryty', (await style(2, 'visibility')) === 'hidden');
+  n0 = log.wms.length;
+  await page.evaluate(() => LidarPL.map.setView(52.0, 19.0, 9.6)); await settle(500);
+  check('z9,6 (zaokrągla do 10): relief pobierany', log.wms.slice(n0).some((u) => u.pathname.endsWith('/ShadedRelief')) && (await style(2, 'visibility')) === 'visible');
+  check('po przybliżeniu status wraca do „Wczytano”', /Wczytano kafli/.test(await page.textContent('#reliefStatus')), await page.textContent('#reliefStatus'));
+
+  // mnożenie
+  check('domyślnie relief jest mieszany przez mnożenie', (await style(2, 'mixBlendMode')) === 'multiply' && await page.isChecked('#multChk'));
+  await page.uncheck('#multChk'); await settle(100);
+  check('odznaczenie mnożenia: zwykłe krycie', (await style(2, 'mixBlendMode')) === 'normal');
+  await page.check('#multChk');
+  await page.click('.seg button[data-mode=swipe]'); await settle(100);
+  check('tryb porównania: bez mnożenia, pole nieaktywne', (await style(2, 'mixBlendMode')) === 'normal' && await page.isDisabled('#multChk'));
+  await page.click('.seg button[data-mode=blend]'); await settle(100);
+  check('powrót do mieszania przywraca mnożenie', (await style(2, 'mixBlendMode')) === 'multiply' && !(await page.isDisabled('#multChk')));
+
+  // lista miast
+  await page.selectOption('#jump', { label: 'Gdańsk' }); await settle(200);
+  v = await view();
+  check('lista miast: Gdańsk, zoom 13', near(v.z, 13, 1e-9) && near(v.lat, 54.352, 1e-6) && near(v.lng, 18.6466, 1e-6), JSON.stringify(v));
+  check('lista wraca do „Wybierz…”', (await page.inputValue('#jump')) === '');
+  const cities = await page.$$eval('#jump option', (o) => o.map((x) => x.textContent));
+  check('na liście są największe miasta', ['Warszawa', 'Kraków', 'Wrocław', 'Poznań', 'Gdańsk', 'Zakopane'].every((c) => cities.includes(c)), cities.join(', '));
+
+  // diagnostyka podkładu: serwer Esri nie odpowiada
+  mode.esriFail = true;
+  await page.check('input[name=base][value=osm]'); await page.check('input[name=base][value=esri]'); await settle(700);
+  check('gdy podkład się nie wczytuje, panel to pokazuje', /Podkład nie wczytał żadnych kafli/.test(await page.textContent('#baseStatus')), await page.textContent('#baseStatus'));
+  await shot('08-base-failure');
+  mode.esriFail = false;
+  await page.check('input[name=base][value=osm]'); await page.check('input[name=base][value=esri]'); await settle(700);
+  check('po naprawie ostrzeżenie znika', (await page.textContent('#baseStatus')) === '');
 }
 
 check('brak błędów JS w konsoli', errors.length === 0, errors.join(' | '));

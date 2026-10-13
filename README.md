@@ -13,9 +13,12 @@ pozostałe warstwy działają, a po wystawieniu przez http(s) działa też OSM.
 
 ## Co potrafi
 
-- Podkłady: satelita Esri, ortofotomapa GUGiK, OpenStreetMap.
+- Podkłady: satelita Esri, ortofotomapa GUGiK, OpenStreetMap. Zdjęcia Esri nie mają podpisów, więc nazwy miejscowości i granice to osobna warstwa (pole „Nazwy miejscowości i granice”).
+- Lista **„Przejdź do miasta”** (największe miasta, Zakopane, Biskupin). Start: Kraków.
 - Relief LIDAR z usług WMS GUGiK: cieniowanie terenu (hillshade) i widoczność nieba (SkyView / SVF).
-- Suwak przezroczystości (0–100%) albo tryb **Porównanie** z przeciąganą linią podziału (relief po prawej, podkład po lewej).
+  Relief pojawia się od poziomu przybliżenia 10 (`RELIEF_MIN_ZOOM`); w skali kraju cieniowanie nizin jest jednolicie szare i tylko zasłania podkład.
+- Domyślnie relief jest mieszany przez **mnożenie** (zachowuje kolory podkładu); suwak przezroczystości (0–100%) reguluje siłę.
+- Tryb **Porównanie** z przeciąganą linią podziału (relief po prawej, podkład po lewej).
 - Własne punkty: dodawanie, nazwy, usuwanie, import i eksport **GPX / KML**, zapis w `localStorage` przeglądarki.
 - Współrzędne WGS84 i PL-1992 oraz wysokość terenu pod kursorem.
 - Link do widoku w adresie (`#zoom/lat/lon`), obsługa myszy, dotyku (pinch) i klawiatury (strzałki, `+`/`-`).
@@ -24,8 +27,9 @@ pozostałe warstwy działają, a po wystawieniu przez http(s) działa też OSM.
 ## Konfiguracja źródeł
 
 Adresy usług i nazwy warstw są na górze skryptu w `index.html` (`BASE_LAYERS`, `RELIEF_LAYERS`, `ELEVATION_URL`).
-Jeśli GUGiK zmieni usługę albo nazwę warstwy, popraw je tam. Panel pokazuje też status ładowania reliefu
-(„Serwer nie zwrócił kafli”), więc błędny adres lub nazwa warstwy jest od razu widoczny.
+Jeśli GUGiK zmieni usługę albo nazwę warstwy, popraw je tam. Panel pokazuje status ładowania podkładu
+(„Podkład nie wczytał żadnych kafli”) i reliefu („Serwer nie zwrócił kafli”), więc błędny adres, nazwa warstwy
+albo zablokowane połączenie są od razu widoczne.
 
 ## Testy
 

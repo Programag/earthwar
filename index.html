@@ -50,10 +50,12 @@ button{cursor:pointer}
 .opts .x{border:0;background:none;color:var(--muted);padding:0 6px;font-size:16px}
 .opts .x:hover{color:var(--danger)}
 .status{margin:6px 0 0;font-size:12px;min-height:1em}
-.status.ok{color:var(--accent)} .status.warn{color:var(--warn)}
+.status.ok{color:var(--accent)} .status.warn{color:var(--warn)} .status.hint{color:var(--muted)}
 .row{display:flex;align-items:center;gap:8px;margin-top:10px}
 .row input[type=range]{flex:1;accent-color:var(--accent)}
 .row output{width:3.2em;text-align:right;font-variant-numeric:tabular-nums}
+.check{display:flex;align-items:center;gap:8px;margin-top:8px;cursor:pointer}
+#jump{width:100%;padding:6px 8px;background:var(--field);border:1px solid var(--line);border-radius:6px}
 .seg{display:flex;margin-top:10px;border:1px solid var(--line);border-radius:8px;overflow:hidden}
 .seg button{flex:1;padding:6px;background:none;border:0}
 .seg button+button{border-left:1px solid var(--line)}
@@ -101,14 +103,22 @@ footer a{color:var(--accent)}
   </header>
 
   <section>
+    <h2>Przejdź do miasta</h2>
+    <select id="jump" aria-label="Przejdź do miasta"></select>
+  </section>
+
+  <section>
     <h2>Podkład</h2>
     <div class="opts" id="baseList"></div>
+    <label class="check"><input type="checkbox" id="labelsChk"> Nazwy miejscowości i granice</label>
+    <p class="status" id="baseStatus"></p>
   </section>
 
   <section>
     <h2>Relief LIDAR</h2>
     <div class="opts" id="reliefList"></div>
     <p class="status" id="reliefStatus"></p>
+    <label class="check"><input type="checkbox" id="multChk"> Mnożenie (zachowaj kolory podkładu)</label>
     <label class="row">Przezroczystość
       <input id="opacity" type="range" min="0" max="100" value="70">
       <output id="opacityOut">70%</output>
@@ -188,14 +198,33 @@ const BASE_LAYERS = [
     attribution: '© autorzy OpenStreetMap' },
 ];
 
+// Zdjęcia Esri nie mają żadnych podpisów – nazwy miejscowości i granice to osobna, przezroczysta warstwa.
+const LABELS_LAYER = {
+  id: 'labels', name: 'Nazwy miejscowości i granice', maxNativeZoom: 18,
+  url: (z, x, y) => `https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/${z}/${y}/${x}`,
+  attribution: 'Nazwy: Esri',
+};
+
+// Poniżej tego poziomu przybliżenia relief się nie wyświetla: w skali kraju cieniowanie nizin
+// jest jednolicie szare i tylko zasłania podkład (1 poziom ≈ 2× większa skala).
+const RELIEF_MIN_ZOOM = 10;
 const RELIEF_LAYERS = [
-  { id: 'hillshade', name: 'Cieniowanie terenu (hillshade)', maxNativeZoom: 20,
+  { id: 'hillshade', name: 'Cieniowanie terenu (hillshade)', maxNativeZoom: 20, minZoom: RELIEF_MIN_ZOOM,
     wms: { url: GUGIK + 'NMT/GRID1/WMS/ShadedRelief', layers: 'Raster' }, attribution: GUGIK_ATTR + ' – NMT' },
-  { id: 'skyview', name: 'Widoczność nieba (SVF / SkyView)', maxNativeZoom: 20,
+  { id: 'skyview', name: 'Widoczność nieba (SVF / SkyView)', maxNativeZoom: 20, minZoom: RELIEF_MIN_ZOOM,
     wms: { url: GUGIK + 'NMT/GRID1/WMS/SkyView', layers: 'Raster' }, attribution: GUGIK_ATTR + ' – NMT' },
 ];
 
-const POLAND_VIEW = { lat: 52.0, lng: 19.4, zoom: 7 };
+const CITIES = [
+  ['Warszawa', 52.2297, 21.0122], ['Kraków', 50.0647, 19.9450], ['Wrocław', 51.1079, 17.0385],
+  ['Poznań', 52.4064, 16.9252], ['Gdańsk', 54.3520, 18.6466], ['Szczecin', 53.4285, 14.5528],
+  ['Łódź', 51.7592, 19.4560], ['Katowice', 50.2649, 19.0238], ['Lublin', 51.2465, 22.5684],
+  ['Białystok', 53.1325, 23.1688], ['Zakopane', 49.2992, 19.9496], ['Biskupin (grodzisko)', 52.7967, 17.7458],
+];
+const CITY_ZOOM = 13;
+
+// Start: Kraków (urozmaicony teren, od razu widać relief).
+const START_VIEW = { lat: 50.0647, lng: 19.945, zoom: 12 };
 
 /* =====================================================================
  *  Pomocnicze
@@ -283,7 +312,7 @@ function wmsUrl(src, z, x, y) {
  * ===================================================================== */
 class TileLayer {
   constructor(o) {
-    Object.assign(this, { opacity: 1, maxNativeZoom: 19, minNativeZoom: 0, zIndex: 1, visible: true, onstats: null }, o);
+    Object.assign(this, { opacity: 1, maxNativeZoom: 19, minNativeZoom: 0, minZoom: 0, zIndex: 1, visible: true, onstats: null }, o);
     this.tiles = new Map();
     this.stats = { ok: 0, err: 0 };
     this.el = h('div', { class: 'layer' });
@@ -307,6 +336,10 @@ class TileLayer {
   _changed() { this.map && this.map.render(); this.onstats && this.onstats(this); }
   _drop(key, t) { t.img.onload = t.img.onerror = null; t.img.removeAttribute('src'); t.img.remove(); this.tiles.delete(key); }
   _update(map) {
+    const far = Math.round(map.z) < this.minZoom;   // za mocno oddalone: nie pobieramy kafli
+    if (far !== !!this.tooFar) { this.tooFar = far; this.onstats && this.onstats(this); }
+    this.el.style.visibility = far ? 'hidden' : '';
+    if (far) { for (const [k, t] of [...this.tiles]) this._drop(k, t); return; }
     const { w, h: hh } = map.size;
     const tz = clamp(Math.min(Math.round(map.z), this.maxNativeZoom), this.minNativeZoom, 22);
     const tl = map._topLeft();
@@ -467,7 +500,7 @@ class TileMap {
 /* =====================================================================
  *  Aplikacja
  * ===================================================================== */
-const prefs = Object.assign({ base: 'esri', relief: 'hillshade', opacity: 70, mode: 'blend' }, store.get('prefs', {}));
+const prefs = Object.assign({ base: 'esri', relief: 'hillshade', opacity: 70, mode: 'blend', multiply: true, labels: true }, store.get('prefs', {}));
 const savePrefs = () => store.set('prefs', prefs);
 let customWms = store.get('customWms', []);
 
@@ -476,7 +509,7 @@ function parseHash() {
   const m = /^#(\d+(?:\.\d+)?)\/(-?\d+(?:\.\d+)?)\/(-?\d+(?:\.\d+)?)$/.exec(location.hash);
   return m ? { zoom: +m[1], lat: +m[2], lng: +m[3] } : null;
 }
-const start = parseHash() || POLAND_VIEW;
+const start = parseHash() || START_VIEW;
 const map = new TileMap($('#map'), start);
 map.setView(start.lat, start.lng, start.zoom);
 
@@ -488,21 +521,45 @@ const writeHash = debounce(() => {
 let baseLayer = null, reliefLayer = null;
 const findDef = (list, id) => list.find((d) => d.id === id);
 const allRelief = () => [...RELIEF_LAYERS, ...customWms.map((c) => ({
-  id: c.id, name: c.name, maxNativeZoom: 20, custom: true, attribution: 'Własne źródło WMS',
+  id: c.id, name: c.name, maxNativeZoom: 20, minZoom: RELIEF_MIN_ZOOM, custom: true, attribution: 'Własne źródło WMS',
   wms: { url: c.url, layers: c.layers, version: c.version },
 }))];
 
 function makeLayer(def, zIndex) {
-  return new TileLayer({ url: def.url || ((z, x, y) => wmsUrl(def.wms, z, x, y)), maxNativeZoom: def.maxNativeZoom ?? 19, zIndex, name: def.name });
+  return new TileLayer({ url: def.url || ((z, x, y) => wmsUrl(def.wms, z, x, y)), maxNativeZoom: def.maxNativeZoom ?? 19, minZoom: def.minZoom ?? 0, zIndex, name: def.name });
 }
+
+const baseStatus = $('#baseStatus');
+function showBaseStats() {
+  const st = baseLayer ? baseLayer.stats : { ok: 0, err: 0 };
+  const broken = st.err > 0 && st.ok === 0;
+  baseStatus.textContent = broken
+    ? '⚠ Podkład nie wczytał żadnych kafli. Sprawdź połączenie z internetem. Jeśli strona jest otwarta w podglądzie (np. w aplikacji), otwórz plik index.html w zwykłej przeglądarce.'
+    : '';
+  baseStatus.className = 'status' + (broken ? ' warn' : '');
+}
+const rafOnce = (fn) => { let q = false; return () => { if (q) return; q = true; requestAnimationFrame(() => { q = false; fn(); }); }; };
+
+let labelsLayer = null;
+function syncLabels() {
+  const chk = $('#labelsChk'), osm = prefs.base === 'osm';   // OSM ma własne podpisy
+  chk.checked = !!prefs.labels; chk.disabled = osm;
+  const want = prefs.labels && !osm;
+  if (want && !labelsLayer) { labelsLayer = makeLayer(LABELS_LAYER, 3); map.addLayer(labelsLayer); }
+  else if (!want && labelsLayer) { map.removeLayer(labelsLayer); labelsLayer = null; }
+  updateAttribution();
+}
+$('#labelsChk').addEventListener('change', (e) => { prefs.labels = e.target.checked; savePrefs(); syncLabels(); });
 
 function setBase(id) {
   const def = findDef(BASE_LAYERS, id) || BASE_LAYERS[0];
   prefs.base = def.id; savePrefs();
   if (baseLayer) map.removeLayer(baseLayer);
   baseLayer = makeLayer(def, 1);
+  baseLayer.onstats = rafOnce(showBaseStats);
   map.addLayer(baseLayer);
-  updateAttribution();
+  showBaseStats();
+  syncLabels();
 }
 
 const reliefStatus = $('#reliefStatus');
@@ -510,12 +567,13 @@ function showReliefStats() {
   if (!reliefLayer) { reliefStatus.textContent = ''; reliefStatus.className = 'status'; return; }
   const { ok, err } = reliefLayer.stats;
   let text = '', cls = 'status';
-  if (err && !ok) { text = `⚠ Serwer nie zwrócił kafli (błędy: ${err}). Sprawdź adres usługi i nazwę warstwy albo przybliż mapę.`; cls += ' warn'; }
+  if (reliefLayer.tooFar) { text = `Przybliż mapę (poziom ${RELIEF_MIN_ZOOM} lub więcej), aby zobaczyć relief – np. wybierz miasto z listy.`; cls += ' hint'; }
+  else if (err && !ok) { text = `⚠ Serwer nie zwrócił kafli (błędy: ${err}). Sprawdź adres usługi i nazwę warstwy albo przybliż mapę.`; cls += ' warn'; }
   else if (err) { text = `⚠ Część kafli się nie załadowała (${err} z ${ok + err}).`; cls += ' warn'; }
   else if (ok) { text = `✓ Wczytano kafli: ${ok}`; cls += ' ok'; }
   reliefStatus.textContent = text; reliefStatus.className = cls;
 }
-const scheduleStats = (() => { let q = false; return () => { if (q) return; q = true; requestAnimationFrame(() => { q = false; showReliefStats(); }); }; })();
+const scheduleStats = rafOnce(showReliefStats);
 
 function setRelief(id) {
   prefs.relief = id; savePrefs();
@@ -536,6 +594,7 @@ function updateAttribution() {
   const parts = new Set();
   const b = findDef(BASE_LAYERS, prefs.base); if (b) parts.add(b.attribution);
   const r = findDef(allRelief(), prefs.relief); if (r) parts.add(r.attribution);
+  if (labelsLayer) parts.add(LABELS_LAYER.attribution);
   $('#attr').textContent = [...parts].join(' · ');
 }
 
@@ -564,8 +623,11 @@ let swipeFrac = 0.5;
 
 function applySwipe() {
   const on = prefs.mode === 'swipe' && reliefLayer;
-  if (reliefLayer) reliefLayer.setOpacity(prefs.mode === 'swipe' ? 1 : prefs.opacity / 100);
-  opacity.disabled = prefs.mode === 'swipe';
+  if (reliefLayer) {
+    reliefLayer.setOpacity(prefs.mode === 'swipe' ? 1 : prefs.opacity / 100);
+    reliefLayer.el.style.mixBlendMode = prefs.mode === 'blend' && prefs.multiply ? 'multiply' : '';
+  }
+  opacity.disabled = $('#multChk').disabled = prefs.mode === 'swipe';
   if (!on) { reliefLayer && reliefLayer.setClip(null); swipe.style.display = 'none'; return; }
   const x = Math.round(swipeFrac * map.size.w);
   reliefLayer.setClip(x);
@@ -587,6 +649,8 @@ opacity.addEventListener('input', () => {
   if (reliefLayer && prefs.mode !== 'swipe') reliefLayer.setOpacity(prefs.opacity / 100);
   savePrefs();
 });
+$('#multChk').checked = prefs.multiply;
+$('#multChk').addEventListener('change', (e) => { prefs.multiply = e.target.checked; savePrefs(); applySwipe(); });
 function setMode(m) {
   prefs.mode = m; savePrefs();
   document.querySelectorAll('.seg button').forEach((b) => b.classList.toggle('on', b.dataset.mode === m));
@@ -626,6 +690,15 @@ $('#cwCaps').addEventListener('click', async () => {
     cwStatus.textContent = 'Nie udało się pobrać listy (serwer może blokować zapytania z przeglądarki). Wpisz nazwę warstwy ręcznie.';
     cwStatus.className = 'status warn';
   }
+});
+
+/* ---- przejście do miasta ---- */
+const jump = $('#jump');
+jump.replaceChildren(h('option', { value: '', text: 'Wybierz…' }), ...CITIES.map(([n], i) => h('option', { value: String(i), text: n })));
+jump.addEventListener('change', () => {
+  const c = CITIES[+jump.value];
+  if (c) map.setView(c[1], c[2], CITY_ZOOM);
+  jump.value = ''; jump.blur();
 });
 
 /* ---- panel ---- */
