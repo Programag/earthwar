@@ -21,6 +21,11 @@ pozostałe warstwy działają, a po wystawieniu przez http(s) działa też OSM.
 - Kafle, które zawiodą chwilowo, są ponawiane (po 0,5 s i 1,2 s); status w panelu dotyczy kafli widocznych w bieżącym widoku.
 - Domyślnie relief jest mieszany przez **mnożenie** (zachowuje kolory podkładu); suwak przezroczystości (0–100%) reguluje siłę.
 - Tryb **Porównanie** z przeciąganą linią podziału (relief po prawej, podkład po lewej).
+- **Szybkość ładowania:** kafle WMS są pobierane po 512 px (4× mniej zapytań niż po 256 px), od środka widoku na zewnątrz;
+  podczas zoomu kółkiem lub gestem nie są pobierane kafle pośrednich poziomów (czekamy ok. 0,15 s na koniec gestu);
+  relief nie jest pobierany w większej szczegółowości niż poziom 18 (siatka NMT ma 1 m). Stałe `WMS_TILE_PX`, `ZOOM_SETTLE_MS`,
+  `SLOW_TILE_MS` są na górze skryptu. Panel pokazuje średni czas kafla reliefu i ostrzega, gdy serwer odpowiada wolno
+  (> 2,5 s), więc od razu widać, czy zwalnia GUGiK, czy coś innego.
 - **Pasek ładowania** u góry ekranu z procentami (wszystkie warstwy razem). Pojawia się, gdy ładowanie trwa dłużej niż ułamek sekundy, i znika po wczytaniu całej mapy.
 - Własne punkty: dodawanie, nazwy, usuwanie, import i eksport **GPX / KML**, zapis w `localStorage` przeglądarki.
 - Współrzędne WGS84 i PL-1992 oraz wysokość terenu pod kursorem.

@@ -104,13 +104,14 @@ const labelSet = new Set(log.esri.filter(isLabels).map(tileKey));
 const wmsHill = log.wms.filter((u) => u.pathname.endsWith('/NMT/GRID1/WMS/ShadedRelief'));
 const wmsSet = new Set(wmsHill.map((u) => { const t = bboxToTile(u.searchParams.get('BBOX')); return `${t.z}/${t.x}/${t.y}`; }));
 check('pobrano kafle Esri', esriSet.size >= 4, `n=${esriSet.size}`);
-check('pobrano kafle ShadedRelief (WMS)', wmsSet.size >= 4, `n=${wmsSet.size}`);
+check('pobrano kafle ShadedRelief (WMS)', wmsSet.size >= 2, `n=${wmsSet.size}`);
 check('pobrano kafle z nazwami miejscowości (Esri Reference) dla tego samego widoku', labelSet.size === esriSet.size && [...esriSet].every((k) => labelSet.has(k)), `img=${esriSet.size} labels=${labelSet.size}`);
-check('BBOX każdego kafla WMS odpowiada kaflowi XYZ tego samego widoku', esriSet.size === wmsSet.size && [...esriSet].every((k) => wmsSet.has(k)), `esri=${[...esriSet]} wms=${[...wmsSet]}`);
+const parentKey = (k) => { const [z, x, y] = k.split('/').map(Number); return `${z - 1}/${x >> 1}/${y >> 1}`; };
+check('BBOX kafli WMS (512 px) dokładnie pokrywa kafle XYZ tego samego widoku (1 kafel WMS = 2×2 XYZ)', [...esriSet].every((k) => wmsSet.has(parentKey(k))) && [...wmsSet].every((k) => [...esriSet].some((e) => parentKey(e) === k)), `esri=${[...esriSet]} wms=${[...wmsSet]}`);
 const p = wmsHill[0].searchParams;
-check('parametry WMS 1.3.0 / EPSG:3857 / 256px',
+check('parametry WMS 1.3.0 / EPSG:3857 / 512px',
   p.get('SERVICE') === 'WMS' && p.get('VERSION') === '1.3.0' && p.get('REQUEST') === 'GetMap' && p.get('LAYERS') === 'Raster' &&
-  p.get('CRS') === 'EPSG:3857' && p.get('WIDTH') === '256' && p.get('HEIGHT') === '256' && p.get('FORMAT') === 'image/png' && p.get('TRANSPARENT') === 'TRUE',
+  p.get('CRS') === 'EPSG:3857' && p.get('WIDTH') === '512' && p.get('HEIGHT') === '512' && p.get('FORMAT') === 'image/png' && p.get('TRANSPARENT') === 'TRUE',
   wmsHill[0].search);
 const cover = await ev(() => {
   const w = innerWidth, h = innerHeight;
@@ -464,8 +465,9 @@ console.log('\n[12] Podróż: oddalenie z Krakowa, przesunięcie do Warszawy, pr
   const finalImg = await ev(() => LidarPL.map.layers.find((l) => l.zIndex === 1)).catch(() => null);
   const needed = await ev(() => [...LidarPL.map.layers.find((l) => l.zIndex === 1).tiles.keys()]);
   const reqKeys = new Set(req.map((t) => `${t.z}/${t.x}/${t.y}`));
-  check('zapytania o relief obejmują wszystkie kafle widoku Warszawy', needed.length > 0 && needed.every((k) => reqKeys.has(k)), `brakuje: ${needed.filter((k) => !reqKeys.has(k)).join(', ')}`);
-  check('w warstwie nie zostały kafle z innego poziomu (stare)', st.zooms.length === 1 && st.zooms[0] === 12, JSON.stringify(st.zooms));
+  const parentOf = (k) => { const [z, x, y] = k.split('/').map(Number); return `${z - 1}/${x >> 1}/${y >> 1}`; };
+  check('zapytania o relief obejmują wszystkie kafle widoku Warszawy', needed.length > 0 && needed.every((k) => reqKeys.has(parentOf(k))), `brakuje: ${needed.filter((k) => !reqKeys.has(parentOf(k))).join(', ')}`);
+  check('w warstwie nie zostały kafle z innego poziomu (stare)', st.zooms.length === 1 && st.zooms[0] === 11, JSON.stringify(st.zooms));   // siatka 512 px dla z12 = poziom 11
   mode.delay = 0;
   await shot('10-warszawa');
 }
@@ -517,6 +519,58 @@ console.log('\n[13] Wskazówka o ukrytym reliefie, próg przybliżenia, ponawian
   await page.evaluate(() => LidarPL.map.setView(54.352, 18.6466, 13)); await settle(3500);
   check('błąd trwały: po ponowieniach ostrzeżenie dotyczy tego, co jest w widoku (nie liczy starych kafli)', /Serwer nie zwrócił kafli/.test(await page.textContent('#reliefStatus')), await page.textContent('#reliefStatus'));
   mode.failFirst = 0;
+}
+
+console.log('\n[14] Szybkość ładowania: liczba zapytań, kolejność, zoom kółkiem, pomiar czasu');
+{
+  const R = 6378137;
+  const merc = (lat, lng) => ({ x: R * lng * Math.PI / 180, y: R * Math.log(Math.tan(Math.PI / 4 + lat * Math.PI / 360)) });
+  const bb = (u) => u.searchParams.get('BBOX').split(',').map(Number);
+  const contains = (b, m) => m.x >= b[0] && m.x <= b[2] && m.y >= b[1] && m.y <= b[3];
+  const relief = (u) => u.pathname.endsWith('/ShadedRelief');
+  const center = merc(50.0647, 19.945);
+
+  // --- start: liczba zapytań i kolejność
+  await page.goto('about:blank');
+  await page.selectOption('#minZoom', '10').catch(() => {});
+  const w0 = log.wms.length, e0 = log.esri.length;
+  await page.goto(PAGE + '#12.00/50.06470/19.94500'); await settle(1500);
+  const wms = log.wms.slice(w0).filter(relief), img = log.esri.slice(e0).filter(isImagery);
+  console.log(`  info  start z12: zapytań o relief = ${wms.length}, kafli podkładu (256 px) = ${img.length}`);
+  check('relief pobierany większymi kafelkami (512 px) = kilka razy mniej zapytań', wms.length > 0 && wms.every((u) => u.searchParams.get('WIDTH') === '512' && u.searchParams.get('HEIGHT') === '512') && wms.length * 3 <= img.length, `${wms.length} vs ${img.length}`);
+  const dW = (u) => { const b = bb(u); return Math.hypot((b[0] + b[2]) / 2 - center.x, (b[1] + b[3]) / 2 - center.y); };
+  check('najpierw pobierany jest kafel najbliższy środka widoku (relief)', wms.length > 0 && dW(wms[0]) <= Math.min(...wms.map(dW)) + 1e-6, wms.map((u) => Math.round(dW(u))).join(','));
+  const dI = (u) => { const [z, x, y] = tileKey(u).split('/').map(Number), n = 2 ** z, size = 2 * ORIGIN / n; return Math.hypot(-ORIGIN + (x + 0.5) * size - center.x, ORIGIN - (y + 0.5) * size - center.y); };
+  check('najpierw pobierany jest kafel najbliższy środka widoku (podkład)', img.length > 0 && dI(img[0]) <= Math.min(...img.map(dI)) + 1e-6, img.map((u) => Math.round(dI(u))).join(','));
+
+  // --- szybki zoom kółkiem: bez burzy zapytań
+  await page.selectOption('#minZoom', '6');
+  await page.evaluate(() => LidarPL.map.setView(50.0647, 19.945, 13)); await settle(800);
+  mode.delay = 300;
+  const n0 = log.wms.length;
+  for (let i = 0; i < 8; i++) { await page.mouse.move(700, 400); await page.mouse.wheel(0, 100); await sleep(50); }
+  const during = log.wms.length - n0;
+  console.log(`  info  zoom kółkiem z13 → z9: zapytań w trakcie gestu = ${during}`);
+  check('w trakcie zoomu kółkiem nie pobieramy kafli pośrednich poziomów', during === 0, `zapytań: ${during}`);
+  await settle(1500);
+  const after = log.wms.slice(n0).filter(relief).map((u) => bboxToTile(u.searchParams.get('BBOX')));
+  const zs = new Set(after.map((t) => t.z));
+  console.log(`  info  po zakończeniu gestu: zapytań = ${after.length}, poziomy = ${[...zs]}`);
+  check('po zatrzymaniu pobierany jest tylko jeden (docelowy) poziom i rozsądna liczba kafli', zs.size === 1 && after.length > 0 && after.length <= 16, JSON.stringify([...zs]) + ' n=' + after.length);
+  v = await view();
+  check('po gestzie wczytany relief pokrywa widok', (await ev(() => { const l = LidarPL.map.layers.find((x) => x.zIndex === 2); const r = [...l.el.querySelectorAll('.tile.ok')].map((i) => i.getBoundingClientRect()); return [[700, 300], [900, 500], [500, 600], [1100, 200]].every(([x, y]) => r.some((q) => x >= q.left && x <= q.right && y >= q.top && y <= q.bottom)); })), JSON.stringify(v));
+
+  // --- pomiar czasu kafli widoczny w panelu
+  mode.delay = 400;
+  await page.evaluate(() => LidarPL.map.setView(52.2297, 21.0122, 12)); await settle(2500);
+  let st = await page.textContent('#reliefStatus');
+  check('panel podaje średni czas kafla reliefu', /Wczytano kafli: \d+ · średnio 0,[4-9] s/.test(st), st);
+  mode.delay = 2800;
+  await page.evaluate(() => LidarPL.map.setView(51.1079, 17.0385, 12)); await settle(5000);
+  st = await page.textContent('#reliefStatus');
+  check('przy wolnym serwerze panel mówi to wprost', /serwer odpowiada wolno/.test(st) && /średnio [2-9],\d s/.test(st), st);
+  mode.delay = 0;
+  await page.selectOption('#minZoom', '10');
 }
 
 check('brak błędów JS w konsoli', errors.length === 0, errors.join(' | '));

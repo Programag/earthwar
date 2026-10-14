@@ -4,6 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>LIDAR Polska – mapa reliefu terenu</title>
+<link rel="preconnect" href="https://mapy.geoportal.gov.pl">
+<link rel="preconnect" href="https://server.arcgisonline.com">
 <style>
 :root{
   --panel:#141b22f2; --panel-solid:#141b22; --fg:#e6edf3; --muted:#8b98a5;
@@ -208,7 +210,7 @@ const BASE_LAYERS = [
   { id: 'esri', name: 'Satelita (Esri)', maxNativeZoom: 18,
     url: (z, x, y) => `https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/${z}/${y}/${x}`,
     attribution: 'Obraz: Esri, Maxar, Earthstar Geographics' },
-  { id: 'ortho', name: 'Ortofotomapa (GUGiK)', maxNativeZoom: 20,
+  { id: 'ortho', name: 'Ortofotomapa (GUGiK)', maxNativeZoom: 19,
     wms: { url: GUGIK + 'ORTO/WMS/StandardResolution', layers: 'Raster', format: 'image/jpeg', transparent: false },
     attribution: GUGIK_ATTR },
   { id: 'osm', name: 'OpenStreetMap', maxNativeZoom: 19,
@@ -228,10 +230,16 @@ const LABELS_LAYER = {
 const RELIEF_MIN_ZOOM = 10;
 // Chwilowo niedostępny kafel ponawiamy po tylu ms (kolejne próby), zanim uznamy go za błąd.
 const RETRY_DELAYS = [500, 1200];
+// Kafle WMS pobieramy w większych kawałkach (px): 512 = 4× mniej zapytań niż 256 przy tej samej ostrości.
+const WMS_TILE_PX = 512;
+// Podczas zoomu (kółko, pinch) nie pobieramy kafli pośrednich poziomów – czekamy, aż gest ucichnie [ms].
+const ZOOM_SETTLE_MS = 150;
+// Średni czas kafla powyżej tej wartości [ms] panel opisuje jako „serwer odpowiada wolno”.
+const SLOW_TILE_MS = 2500;
 const RELIEF_LAYERS = [
-  { id: 'hillshade', name: 'Cieniowanie terenu (hillshade)', maxNativeZoom: 20,
+  { id: 'hillshade', name: 'Cieniowanie terenu (hillshade)', maxNativeZoom: 18,
     wms: { url: GUGIK + 'NMT/GRID1/WMS/ShadedRelief', layers: 'Raster' }, attribution: GUGIK_ATTR + ' – NMT' },
-  { id: 'skyview', name: 'Widoczność nieba (SVF / SkyView)', maxNativeZoom: 20,
+  { id: 'skyview', name: 'Widoczność nieba (SVF / SkyView)', maxNativeZoom: 18,
     wms: { url: GUGIK + 'NMT/GRID1/WMS/SkyView', layers: 'Raster' }, attribution: GUGIK_ATTR + ' – NMT' },
 ];
 
@@ -311,7 +319,7 @@ function toPL1992(lat, lon) {
 }
 
 /* ---- WMS ---- */
-function wmsUrl(src, z, x, y) {
+function wmsUrl(src, z, x, y, px = 256) {
   const bb = tileBBox3857(z, x, y).map((v) => +v.toFixed(4)).join(',');
   const v13 = src.version !== '1.1.1';
   const q = [
@@ -320,7 +328,7 @@ function wmsUrl(src, z, x, y) {
     'STYLES=' + encodeURIComponent(src.styles || ''),
     'FORMAT=' + (src.format || 'image/png'),
     'TRANSPARENT=' + (src.transparent === false ? 'FALSE' : 'TRUE'),
-    'WIDTH=256', 'HEIGHT=256',
+    'WIDTH=' + px, 'HEIGHT=' + px,
     (v13 ? 'CRS=' : 'SRS=') + 'EPSG:3857',
     'BBOX=' + bb,
   ].join('&');
@@ -332,7 +340,8 @@ function wmsUrl(src, z, x, y) {
  * ===================================================================== */
 class TileLayer {
   constructor(o) {
-    Object.assign(this, { opacity: 1, maxNativeZoom: 19, minNativeZoom: 0, minZoom: 0, zIndex: 1, visible: true, onstats: null }, o);
+    Object.assign(this, { opacity: 1, maxNativeZoom: 19, minNativeZoom: 0, minZoom: 0, zIndex: 1, visible: true, onstats: null, tileSize: TILE }, o);
+    this.zoomOffset = Math.log2(this.tileSize / TILE);   // 512 px = siatka o 1 poziom rzadsza
     this.tiles = new Map();
     this.el = h('div', { class: 'layer' });
     this.el.style.zIndex = this.zIndex;
@@ -340,6 +349,12 @@ class TileLayer {
   }
   setOpacity(v) { this.opacity = v; this.el.style.opacity = v; }
   setClip(x) { this.el.style.clipPath = x == null ? '' : `inset(0 0 0 ${x}px)`; }
+  /** Średni i maksymalny czas wczytania kafli obecnych w widoku [ms] albo null. */
+  get timing() {
+    const ts = [...this.tiles.values()].filter((t) => t.dt != null).map((t) => t.dt);
+    if (!ts.length) return null;
+    return { n: ts.length, avg: ts.reduce((a, b) => a + b, 0) / ts.length, max: Math.max(...ts) };
+  }
   /** Kafle aktualnie obecne w widoku: wczytane / zakończone błędem (po ponowieniach). */
   get stats() {
     let ok = 0, err = 0;
@@ -349,18 +364,23 @@ class TileLayer {
   _create(z, x, y, key) {
     const img = new Image();
     img.className = 'tile'; img.alt = ''; img.draggable = false; img.decoding = 'async';
-    const t = { z, x, y, img, done: false, tries: 0, timer: 0 };
+    const t = { z, x, y, img, done: false, tries: 0, timer: 0, t0: 0, dt: null };
     const src = this.url(z, x, y);
-    img.onload = () => { t.done = t.loaded = true; img.classList.add('ok'); this.map.tileEnd(false); this._changed(); };
+    img.onload = () => {
+      t.done = t.loaded = true; img.classList.add('ok');
+      t.dt = performance.now() - t.t0;
+      this.map.tileEnd(false); this._changed();
+    };
     img.onerror = () => {
       if (t.tries < RETRY_DELAYS.length) {   // chwilowy błąd serwera: ponów, zamiast zostawiać dziurę w mapie
         const wait = RETRY_DELAYS[t.tries++];
-        t.timer = setTimeout(() => { img.src = src + (src.includes('?') ? '&' : '?') + '_retry=' + t.tries; }, wait);
+        t.timer = setTimeout(() => { t.t0 = performance.now(); img.src = src + (src.includes('?') ? '&' : '?') + '_retry=' + t.tries; }, wait);
         return;
       }
       t.done = t.failed = true; this.map.tileEnd(false); this._changed();
     };
     this.map.tileStart();
+    t.t0 = performance.now();
     img.src = src;
     this.el.appendChild(img);
     this.tiles.set(key, t);
@@ -379,26 +399,41 @@ class TileLayer {
     this.el.style.visibility = far ? 'hidden' : '';
     if (far) { for (const [k, t] of [...this.tiles]) this._drop(k, t); return; }
     const { w, h: hh } = map.size;
-    const tz = clamp(Math.min(Math.round(map.z), this.maxNativeZoom), this.minNativeZoom, 22);
     const tl = map._topLeft();
-    const ts = TILE * Math.pow(2, map.z - tz);
-    const n = Math.pow(2, tz);
+    // Trwa zoom (kółko, pinch): tylko skalujemy to, co już jest. Kafle pośrednich poziomów byłyby
+    // porzucone po ułamku sekundy, a serwer i tak by je liczył, spowalniając te naprawdę potrzebne.
+    if (map.zoomSettling()) { this._position(map, tl, w, hh, null, null, false); return; }
+    // poziom siatki kafli (dla kafli 512 px siatka jest o 1 poziom rzadsza)
+    const gz = Math.max(0, clamp(Math.min(Math.round(map.z), this.maxNativeZoom), this.minNativeZoom, 22) - this.zoomOffset);
+    const ts = TILE * Math.pow(2, map.z - gz);
+    const n = Math.pow(2, gz);
     const x0 = Math.max(0, Math.floor(tl[0] / ts)), x1 = Math.min(n - 1, Math.floor((tl[0] + w) / ts));
     const y0 = Math.max(0, Math.floor(tl[1] / ts)), y1 = Math.min(n - 1, Math.floor((tl[1] + hh) / ts));
+    // kafle od środka widoku na zewnątrz: przeglądarka kolejkuje żądania w kolejności tworzenia,
+    // więc to, na co patrzysz, ładuje się pierwsze
+    const cx = (tl[0] + w / 2) / ts, cy = (tl[1] + hh / 2) / ts, order = [];
+    for (let ty = y0; ty <= y1; ty++) for (let tx = x0; tx <= x1; tx++) order.push([tx, ty, (tx + 0.5 - cx) ** 2 + (ty + 0.5 - cy) ** 2]);
+    order.sort((a, b) => a[2] - b[2]);
     const need = new Set();
     let pending = false;
-    for (let ty = y0; ty <= y1; ty++) for (let tx = x0; tx <= x1; tx++) {
-      const key = tz + '/' + tx + '/' + ty;
+    for (const [tx, ty] of order) {
+      const key = gz + '/' + tx + '/' + ty;
       need.add(key);
-      const t = this.tiles.get(key) || this._create(tz, tx, ty, key);
+      const t = this.tiles.get(key) || this._create(gz, tx, ty, key);
       if (!t.done) pending = true;
     }
+    this._position(map, tl, w, hh, gz, need, pending);
+  }
+  /** Ustawia kafle na ekranie; z `need` dodatkowo usuwa te, które są już niepotrzebne. */
+  _position(map, tl, w, hh, gz, need, pending) {
     for (const [key, t] of this.tiles) {
       const s = Math.pow(2, map.z - t.z), size = TILE * s;
       const left = Math.round(t.x * size - tl[0]), top = Math.round(t.y * size - tl[1]);
-      if (t.z === tz) { if (!need.has(key)) { this._drop(key, t); continue; } }
-      // kafle z innego poziomu zostają tylko do czasu załadowania nowych (brak „dziur” przy zmianie zoomu)
-      else if (!pending || left > w || top > hh || left + size < 0 || top + size < 0) { this._drop(key, t); continue; }
+      if (need) {
+        if (t.z === gz) { if (!need.has(key)) { this._drop(key, t); continue; } }
+        // kafle z innego poziomu zostają tylko do czasu załadowania nowych (brak „dziur” przy zmianie zoomu)
+        else if (!pending || left > w || top > hh || left + size < 0 || top + size < 0) { this._drop(key, t); continue; }
+      }
       t.img.style.transform = `translate3d(${left}px,${top}px,0) scale(${s + 0.75 / TILE})`;
       t.img.style.zIndex = t.z;
     }
@@ -410,6 +445,7 @@ class TileMap {
   constructor(el, { lat, lng, zoom, minZoom = 4, maxZoom = 20 }) {
     Object.assign(this, { el, minZoom, maxZoom, z: zoom, layers: [], listeners: {}, dblZoom: true });
     this.center = { lat, lng };
+    this._lastZ = zoom; this._zoomAt = -1e9;   // moment ostatniej zmiany powiększenia (do wyciszania zoomu)
     this.loading = { pending: 0, total: 0, done: 0 };   // postęp ładowania kafli (wszystkie warstwy)
     this.size = { w: el.clientWidth, h: el.clientHeight };
     this.pane = h('div', { class: 'pane' });
@@ -480,10 +516,17 @@ class TileMap {
     this.setView(c.lat, c.lng, z);
   }
 
+  zoomSettling() { return performance.now() - this._zoomAt < ZOOM_SETTLE_MS; }
+
   render() {
     if (this._raf) return;
     this._raf = requestAnimationFrame(() => {
       this._raf = 0;
+      if (this.z !== this._lastZ) {   // zmiana powiększenia: po chwili ciszy dociągamy kafle docelowego poziomu
+        this._lastZ = this.z; this._zoomAt = performance.now();
+        clearTimeout(this._settleT);
+        this._settleT = setTimeout(() => this.render(), ZOOM_SETTLE_MS + 20);
+      }
       for (const l of this.layers) if (l.visible) l._update(this);
       this.fire('move');
     });
@@ -577,22 +620,24 @@ const writeHash = debounce(() => {
 let baseLayer = null, reliefLayer = null;
 const findDef = (list, id) => list.find((d) => d.id === id);
 const allRelief = () => [...RELIEF_LAYERS, ...customWms.map((c) => ({
-  id: c.id, name: c.name, maxNativeZoom: 20, custom: true, attribution: 'Własne źródło WMS',
+  id: c.id, name: c.name, maxNativeZoom: 19, custom: true, attribution: 'Własne źródło WMS',
   wms: { url: c.url, layers: c.layers, version: c.version },
 }))];
 
 function makeLayer(def, zIndex) {
-  return new TileLayer({ url: def.url || ((z, x, y) => wmsUrl(def.wms, z, x, y)), maxNativeZoom: def.maxNativeZoom ?? 19, minZoom: def.minZoom ?? 0, zIndex, name: def.name });
+  const tileSize = def.wms ? (def.tileSize ?? WMS_TILE_PX) : TILE;
+  return new TileLayer({ url: def.url || ((z, x, y) => wmsUrl(def.wms, z, x, y, tileSize)), tileSize, maxNativeZoom: def.maxNativeZoom ?? 19, minZoom: def.minZoom ?? 0, zIndex, name: def.name });
 }
 
 const baseStatus = $('#baseStatus');
 function showBaseStats() {
   const st = baseLayer ? baseLayer.stats : { ok: 0, err: 0 };
   const broken = st.err > 0 && st.ok === 0;
+  const tm = baseLayer && baseLayer.timing, slow = !broken && tm && tm.avg > SLOW_TILE_MS / 2;
   baseStatus.textContent = broken
     ? '⚠ Podkład nie wczytał żadnych kafli. Sprawdź połączenie z internetem. Jeśli strona jest otwarta w podglądzie (np. w aplikacji), otwórz plik index.html w zwykłej przeglądarce.'
-    : '';
-  baseStatus.className = 'status' + (broken ? ' warn' : '');
+    : slow ? `Podkład odpowiada wolno (średnio ${fmtSec(tm.avg)} s na kafel).` : '';
+  baseStatus.className = 'status' + (broken || slow ? ' warn' : '');
 }
 const rafOnce = (fn) => { let q = false; return () => { if (q) return; q = true; requestAnimationFrame(() => { q = false; fn(); }); }; };
 
@@ -646,6 +691,7 @@ function setBase(id) {
   syncLabels();
 }
 
+const fmtSec = (ms) => (ms / 1000).toFixed(1).replace('.', ',');
 const reliefStatus = $('#reliefStatus');
 function showReliefStats() {
   const hint = $('#zoomHint');
@@ -659,7 +705,14 @@ function showReliefStats() {
   }
   else if (err && !ok) { text = `⚠ Serwer nie zwrócił kafli (błędy: ${err}). Sprawdź adres usługi i nazwę warstwy albo przybliż mapę.`; cls += ' warn'; }
   else if (err) { text = `⚠ Część kafli się nie załadowała (${err} z ${ok + err}).`; cls += ' warn'; }
-  else if (ok) { text = `✓ Wczytano kafli: ${ok}`; cls += ' ok'; }
+  else if (ok) {
+    text = `✓ Wczytano kafli: ${ok}`; cls += ' ok';
+    const tm = reliefLayer.timing;
+    if (tm) {
+      text += ` · średnio ${fmtSec(tm.avg)} s`;
+      if (tm.avg > SLOW_TILE_MS) { text += ' – serwer odpowiada wolno'; cls = 'status warn'; }
+    }
+  }
   reliefStatus.textContent = text; reliefStatus.className = cls;
 }
 const scheduleStats = rafOnce(showReliefStats);
