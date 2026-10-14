@@ -136,6 +136,7 @@ footer a{color:var(--accent)}
       <select id="minZoom" style="margin-left:auto;padding:4px 8px;background:var(--field);border:1px solid var(--line);border-radius:6px"></select>
     </label>
     <label class="check"><input type="checkbox" id="multChk"> Mnożenie (zachowaj kolory podkładu)</label>
+    <label class="check" title="JPEG jest wielokrotnie mniejszy i szybszy. PNG jest przezroczysty tam, gdzie nie ma danych."><input type="checkbox" id="pngChk"> Przezroczysty PNG zamiast JPEG (wolniejszy)</label>
     <label class="row">Przezroczystość
       <input id="opacity" type="range" min="0" max="100" value="70">
       <output id="opacityOut">70%</output>
@@ -236,11 +237,16 @@ const WMS_TILE_PX = 512;
 const ZOOM_SETTLE_MS = 150;
 // Średni czas kafla powyżej tej wartości [ms] panel opisuje jako „serwer odpowiada wolno”.
 const SLOW_TILE_MS = 2500;
+// Zgrubny podgląd: gdy w warstwie nic jeszcze nie jest wczytane, jako pierwsze pobieramy kilka kafli o
+// PREVIEW_LEVELS poziomów rzadszej siatce i PREVIEW_PX px. Są tanie dla serwera i pokrywają cały widok,
+// więc ekran wypełnia się od razu (rozmyty), a szczegóły dochodzą potem. Znikają po wczytaniu szczegółów.
+const PREVIEW_LEVELS = 2;
+const PREVIEW_PX = 256;
 const RELIEF_LAYERS = [
   { id: 'hillshade', name: 'Cieniowanie terenu (hillshade)', maxNativeZoom: 18,
-    wms: { url: GUGIK + 'NMT/GRID1/WMS/ShadedRelief', layers: 'Raster' }, attribution: GUGIK_ATTR + ' – NMT' },
+    wms: { url: GUGIK + 'NMT/GRID1/WMS/ShadedRelief', layers: 'Raster', format: 'image/jpeg', transparent: false, fallback: { format: 'image/png', transparent: true } }, attribution: GUGIK_ATTR + ' – NMT' },
   { id: 'skyview', name: 'Widoczność nieba (SVF / SkyView)', maxNativeZoom: 18,
-    wms: { url: GUGIK + 'NMT/GRID1/WMS/SkyView', layers: 'Raster' }, attribution: GUGIK_ATTR + ' – NMT' },
+    wms: { url: GUGIK + 'NMT/GRID1/WMS/SkyView', layers: 'Raster', format: 'image/jpeg', transparent: false, fallback: { format: 'image/png', transparent: true } }, attribution: GUGIK_ATTR + ' – NMT' },
 ];
 
 const CITIES = [
@@ -340,7 +346,8 @@ function wmsUrl(src, z, x, y, px = 256) {
  * ===================================================================== */
 class TileLayer {
   constructor(o) {
-    Object.assign(this, { opacity: 1, maxNativeZoom: 19, minNativeZoom: 0, minZoom: 0, zIndex: 1, visible: true, onstats: null, tileSize: TILE }, o);
+    Object.assign(this, { opacity: 1, maxNativeZoom: 19, minNativeZoom: 0, minZoom: 0, zIndex: 1, visible: true, onstats: null, tileSize: TILE, urlAlt: null, preview: false }, o);
+    this.mainOk = false; this.useAlt = false;   // czy format główny działa / przełączyliśmy się na zapasowy
     this.zoomOffset = Math.log2(this.tileSize / TILE);   // 512 px = siatka o 1 poziom rzadsza
     this.tiles = new Map();
     this.el = h('div', { class: 'layer' });
@@ -351,29 +358,36 @@ class TileLayer {
   setClip(x) { this.el.style.clipPath = x == null ? '' : `inset(0 0 0 ${x}px)`; }
   /** Średni i maksymalny czas wczytania kafli obecnych w widoku [ms] albo null. */
   get timing() {
-    const ts = [...this.tiles.values()].filter((t) => t.dt != null).map((t) => t.dt);
+    const ts = [...this.tiles.values()].filter((t) => t.dt != null && !t.preview).map((t) => t.dt);
     if (!ts.length) return null;
     return { n: ts.length, avg: ts.reduce((a, b) => a + b, 0) / ts.length, max: Math.max(...ts) };
   }
   /** Kafle aktualnie obecne w widoku: wczytane / zakończone błędem (po ponowieniach). */
   get stats() {
     let ok = 0, err = 0;
-    for (const t of this.tiles.values()) { if (t.failed) err++; else if (t.loaded) ok++; }
+    for (const t of this.tiles.values()) { if (t.preview) continue; if (t.failed) err++; else if (t.loaded) ok++; }
     return { ok, err };
   }
-  _create(z, x, y, key) {
+  _create(z, x, y, key, preview = false) {
     const img = new Image();
     img.className = 'tile'; img.alt = ''; img.draggable = false; img.decoding = 'async';
-    const t = { z, x, y, img, done: false, tries: 0, timer: 0, t0: 0, dt: null };
-    const src = this.url(z, x, y);
+    const t = { z, x, y, img, done: false, tries: 0, timer: 0, t0: 0, dt: null, preview, alt: this.useAlt && !!this.urlAlt };
+    const px = preview ? PREVIEW_PX : this.tileSize;
+    const srcFor = () => (t.alt ? this.urlAlt : this.url)(z, x, y, px);
     img.onload = () => {
       t.done = t.loaded = true; img.classList.add('ok');
       t.dt = performance.now() - t.t0;
+      if (t.alt && !this.mainOk) this.useAlt = true;   // zapasowy format działa, a główny nigdy: zostajemy przy zapasowym
+      if (!t.alt) this.mainOk = true;
       this.map.tileEnd(false); this._changed();
     };
     img.onerror = () => {
+      if (this.urlAlt && !t.alt && !this.mainOk) {   // może serwer nie obsługuje formatu głównego (JPEG): spróbuj zapasowego
+        t.alt = true; t.t0 = performance.now(); img.src = srcFor();   // zmiana formatu to nie „ponowienie”
+        return;
+      }
       if (t.tries < RETRY_DELAYS.length) {   // chwilowy błąd serwera: ponów, zamiast zostawiać dziurę w mapie
-        const wait = RETRY_DELAYS[t.tries++];
+        const wait = RETRY_DELAYS[t.tries++], src = srcFor();
         t.timer = setTimeout(() => { t.t0 = performance.now(); img.src = src + (src.includes('?') ? '&' : '?') + '_retry=' + t.tries; }, wait);
         return;
       }
@@ -381,7 +395,7 @@ class TileLayer {
     };
     this.map.tileStart();
     t.t0 = performance.now();
-    img.src = src;
+    img.src = srcFor();
     this.el.appendChild(img);
     this.tiles.set(key, t);
     return t;
@@ -414,6 +428,23 @@ class TileLayer {
     const cx = (tl[0] + w / 2) / ts, cy = (tl[1] + hh / 2) / ts, order = [];
     for (let ty = y0; ty <= y1; ty++) for (let tx = x0; tx <= x1; tx++) order.push([tx, ty, (tx + 0.5 - cx) ** 2 + (ty + 0.5 - cy) ** 2]);
     order.sort((a, b) => a[2] - b[2]);
+    // Nic jeszcze nie wczytane (start, skok w inne miejsce, nowa warstwa): najpierw tanie, zgrubne kafle
+    // na cały widok. Przy zwykłym przesuwaniu i zoomie służą za podkład stare kafle, więc podglądów nie ma.
+    const gc = gz - PREVIEW_LEVELS;
+    const inView = [...this.tiles.values()].some((t) => {   // wczytany kafel, który jest teraz widoczny (stare z innego miejsca się nie liczą)
+      if (!t.loaded) return false;
+      const sz = TILE * Math.pow(2, map.z - t.z), left = t.x * sz - tl[0], top = t.y * sz - tl[1];
+      return left < w && top < hh && left + sz > 0 && top + sz > 0;
+    });
+    if (this.preview && gc >= 0 && !inView) {
+      const tsc = TILE * Math.pow(2, map.z - gc), nc = Math.pow(2, gc);
+      const ccx = (tl[0] + w / 2) / tsc, ccy = (tl[1] + hh / 2) / tsc, co = [];
+      const cx0 = Math.max(0, Math.floor(tl[0] / tsc)), cx1 = Math.min(nc - 1, Math.floor((tl[0] + w) / tsc));
+      const cy0 = Math.max(0, Math.floor(tl[1] / tsc)), cy1 = Math.min(nc - 1, Math.floor((tl[1] + hh) / tsc));
+      for (let ty = cy0; ty <= cy1; ty++) for (let tx = cx0; tx <= cx1; tx++) co.push([tx, ty, (tx + 0.5 - ccx) ** 2 + (ty + 0.5 - ccy) ** 2]);
+      co.sort((a, b) => a[2] - b[2]);
+      for (const [tx, ty] of co) { const key = gc + '/' + tx + '/' + ty; if (!this.tiles.has(key)) this._create(gc, tx, ty, key, true); }
+    }
     const need = new Set();
     let pending = false;
     for (const [tx, ty] of order) {
@@ -599,7 +630,7 @@ class TileMap {
 /* =====================================================================
  *  Aplikacja
  * ===================================================================== */
-const prefs = Object.assign({ base: 'esri', relief: 'hillshade', opacity: 70, mode: 'blend', multiply: true, labels: true, minZoom: RELIEF_MIN_ZOOM }, store.get('prefs', {}));
+const prefs = Object.assign({ base: 'esri', relief: 'hillshade', opacity: 70, mode: 'blend', multiply: true, labels: true, png: false, minZoom: RELIEF_MIN_ZOOM }, store.get('prefs', {}));
 const savePrefs = () => store.set('prefs', prefs);
 let customWms = store.get('customWms', []);
 
@@ -626,7 +657,12 @@ const allRelief = () => [...RELIEF_LAYERS, ...customWms.map((c) => ({
 
 function makeLayer(def, zIndex) {
   const tileSize = def.wms ? (def.tileSize ?? WMS_TILE_PX) : TILE;
-  return new TileLayer({ url: def.url || ((z, x, y) => wmsUrl(def.wms, z, x, y, tileSize)), tileSize, maxNativeZoom: def.maxNativeZoom ?? 19, minZoom: def.minZoom ?? 0, zIndex, name: def.name });
+  const wmsFn = (w) => (z, x, y, px) => wmsUrl(w, z, x, y, px || tileSize);
+  const w = def.wms;
+  return new TileLayer({
+    url: def.url || wmsFn(w), urlAlt: w && w.fallback ? wmsFn({ ...w, ...w.fallback }) : null, preview: !!w, tileSize,
+    maxNativeZoom: def.maxNativeZoom ?? 19, minZoom: def.minZoom ?? 0, zIndex, name: def.name,
+  });
 }
 
 const baseStatus = $('#baseStatus');
@@ -712,6 +748,7 @@ function showReliefStats() {
       text += ` · średnio ${fmtSec(tm.avg)} s`;
       if (tm.avg > SLOW_TILE_MS) { text += ' – serwer odpowiada wolno'; cls = 'status warn'; }
     }
+    if (reliefLayer.useAlt) text += ' · format PNG (serwer nie obsłużył JPEG)';
   }
   reliefStatus.textContent = text; reliefStatus.className = cls;
 }
@@ -720,7 +757,8 @@ const scheduleStats = rafOnce(showReliefStats);
 function setRelief(id) {
   prefs.relief = id; savePrefs();
   if (reliefLayer) { map.removeLayer(reliefLayer); reliefLayer = null; }
-  const def = findDef(allRelief(), id);
+  let def = findDef(allRelief(), id);
+  if (def && prefs.png && def.wms.fallback) def = { ...def, wms: { ...def.wms, ...def.wms.fallback, fallback: null } };   // wymuszony PNG
   if (def) {
     reliefLayer = makeLayer(def, 2);
     reliefLayer.minZoom = prefs.minZoom;
@@ -800,6 +838,8 @@ minZoomSel.addEventListener('change', () => {
   if (reliefLayer) { reliefLayer.minZoom = prefs.minZoom; map.render(); showReliefStats(); }
 });
 $('#zoomHintBtn').addEventListener('click', () => map.zoomTo(Math.max(map.z, prefs.minZoom)));
+$('#pngChk').checked = prefs.png;
+$('#pngChk').addEventListener('change', (e) => { prefs.png = e.target.checked; savePrefs(); setRelief(prefs.relief); });
 $('#multChk').checked = prefs.multiply;
 $('#multChk').addEventListener('change', (e) => { prefs.multiply = e.target.checked; savePrefs(); applySwipe(); });
 function setMode(m) {

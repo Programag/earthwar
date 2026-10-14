@@ -26,6 +26,11 @@ pozostałe warstwy działają, a po wystawieniu przez http(s) działa też OSM.
   relief nie jest pobierany w większej szczegółowości niż poziom 18 (siatka NMT ma 1 m). Stałe `WMS_TILE_PX`, `ZOOM_SETTLE_MS`,
   `SLOW_TILE_MS` są na górze skryptu. Panel pokazuje średni czas kafla reliefu i ostrzega, gdy serwer odpowiada wolno
   (> 2,5 s), więc od razu widać, czy zwalnia GUGiK, czy coś innego.
+  Relief jest pobierany jako **JPEG** (nieprzezroczysty raster jest wielokrotnie mniejszy i szybszy do zakodowania niż PNG z alfą).
+  Jeśli serwer JPEG odrzuci, warstwa sama przechodzi na PNG i panel o tym informuje; PNG można też wymusić polem
+  „Przezroczysty PNG zamiast JPEG”. W trybie Mnożenie biel (brak danych) nie przeszkadza.
+  Gdy w widoku nic jeszcze nie jest wczytane (start, skok do miasta), jako pierwsze idą 1–4 tanie, zgrubne podglądy
+  (`PREVIEW_LEVELS`, `PREVIEW_PX`), więc ekran wypełnia się od razu, a szczegóły dochodzą potem.
 - **Pasek ładowania** u góry ekranu z procentami (wszystkie warstwy razem). Pojawia się, gdy ładowanie trwa dłużej niż ułamek sekundy, i znika po wczytaniu całej mapy.
 - Własne punkty: dodawanie, nazwy, usuwanie, import i eksport **GPX / KML**, zapis w `localStorage` przeglądarki.
 - Współrzędne WGS84 i PL-1992 oraz wysokość terenu pod kursorem.

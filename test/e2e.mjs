@@ -51,7 +51,7 @@ const bboxToTile = (bbox) => { const [x0, , , y1] = bbox.split(',').map(Number);
 const browser = await chromium.launch();
 const ctx = await browser.newContext({ viewport: { width: 1280, height: 800 }, acceptDownloads: true });
 const log = { esri: [], osm: [], wms: [], elev: [], custom: [], other: [] };
-const mode = { gugikFail: false, esriFail: false, delay: 0, failFirst: 0, attempts: new Map() };   // failFirst: tyle pierwszych prób każdego kafla GUGiK kończy się błędem 500   // delay: opóźnienie odpowiedzi GUGiK [ms]
+const mode = { gugikFail: false, esriFail: false, delay: 0, failFirst: 0, attempts: new Map(), noJpeg: false };   // failFirst: tyle pierwszych prób każdego kafla GUGiK kończy się błędem 500   // delay: opóźnienie odpowiedzi GUGiK [ms]
 const CORS = { 'access-control-allow-origin': '*' };
 await ctx.route(/^https?:/, async (route) => {
   const u = new URL(route.request().url());
@@ -71,6 +71,7 @@ await ctx.route(/^https?:/, async (route) => {
       mode.attempts.set(k, n);
       if (n <= mode.failFirst) return fulfill('boom', 'text/plain', 500);
     }
+    if (mode.noJpeg && u.pathname.includes('/NMT/') && u.searchParams.get('FORMAT') === 'image/jpeg') return fulfill('<ServiceExceptionReport><ServiceException code="InvalidFormat"/></ServiceExceptionReport>', 'text/xml');
     return mode.gugikFail ? fulfill('boom', 'text/plain', 500) : fulfill(TILES.relief);
   }
   if (u.host === 'services.gugik.gov.pl') { log.elev.push(u); return fulfill('123.4', 'text/plain'); }
@@ -101,7 +102,7 @@ let v = await view();
 check('widok startowy: Kraków, zoom 12', near(v.z, 12, 1e-9) && near(v.lat, 50.0647, 1e-6) && near(v.lng, 19.945, 1e-6), JSON.stringify(v));
 const esriSet = new Set(log.esri.filter(isImagery).map(tileKey));
 const labelSet = new Set(log.esri.filter(isLabels).map(tileKey));
-const wmsHill = log.wms.filter((u) => u.pathname.endsWith('/NMT/GRID1/WMS/ShadedRelief'));
+const wmsHill = log.wms.filter((u) => u.pathname.endsWith('/NMT/GRID1/WMS/ShadedRelief') && u.searchParams.get('WIDTH') === '512');   // bez zgrubnych podglądów (256 px)
 const wmsSet = new Set(wmsHill.map((u) => { const t = bboxToTile(u.searchParams.get('BBOX')); return `${t.z}/${t.x}/${t.y}`; }));
 check('pobrano kafle Esri', esriSet.size >= 4, `n=${esriSet.size}`);
 check('pobrano kafle ShadedRelief (WMS)', wmsSet.size >= 2, `n=${wmsSet.size}`);
@@ -111,7 +112,7 @@ check('BBOX kafli WMS (512 px) dokładnie pokrywa kafle XYZ tego samego widoku (
 const p = wmsHill[0].searchParams;
 check('parametry WMS 1.3.0 / EPSG:3857 / 512px',
   p.get('SERVICE') === 'WMS' && p.get('VERSION') === '1.3.0' && p.get('REQUEST') === 'GetMap' && p.get('LAYERS') === 'Raster' &&
-  p.get('CRS') === 'EPSG:3857' && p.get('WIDTH') === '512' && p.get('HEIGHT') === '512' && p.get('FORMAT') === 'image/png' && p.get('TRANSPARENT') === 'TRUE',
+  p.get('CRS') === 'EPSG:3857' && p.get('WIDTH') === '512' && p.get('HEIGHT') === '512' && p.get('FORMAT') === 'image/jpeg' && p.get('TRANSPARENT') === 'FALSE',
   wmsHill[0].search);
 const cover = await ev(() => {
   const w = innerWidth, h = innerHeight;
@@ -343,13 +344,13 @@ console.log('\n[10] Nazwy miejscowości, próg przybliżenia, mnożenie, lista m
   check('OSM ma własne podpisy: nazwy Esri wyłączone, pole nieaktywne', !(await hasLayer(3)) && await page.isDisabled('#labelsChk'));
   await page.check('input[name=base][value=esri]'); await settle(300);
   check('powrót na Esri przywraca nazwy', await hasLayer(3) && !(await page.isDisabled('#labelsChk')));
-  await page.evaluate(() => LidarPL.map.setView(50.0647, 19.945, 13)); await shot('07-labels-multiply');
+  await page.evaluate(() => LidarPL.map.setView(50.0647, 19.945, 13)); await settle(600); await shot('07-labels-multiply');   // kafle z13 ruszają ok. 0,15 s po zmianie zoomu
 
   // próg przybliżenia reliefu
   let n0 = log.wms.length;
   await page.evaluate(() => LidarPL.map.setView(52.0, 19.0, 8)); await settle(500);
   const farReq = log.wms.slice(n0).filter((u) => u.pathname.endsWith('/ShadedRelief'));
-  check('poniżej progu (z8): brak zapytań o relief, warstwa ukryta', farReq.length === 0 && (await style(2, 'visibility')) === 'hidden');
+  check('poniżej progu (z8): brak zapytań o relief, warstwa ukryta', farReq.length === 0 && (await style(2, 'visibility')) === 'hidden', `zapytań: ${farReq.length} ${farReq.slice(0, 3).map((u) => u.search.slice(0, 120)).join(' | ')}; visibility=${await style(2, 'visibility')}`);
   check('poniżej progu: podpowiedź zamiast „szarej strony”', /ukryty przy tym oddaleniu \(widoczny od poziomu 10\)/.test(await page.textContent('#reliefStatus')), await page.textContent('#reliefStatus'));
   check('poniżej progu nazwy miejscowości nadal widać', await hasLayer(3) && (await style(3, 'visibility')) !== 'hidden');
   await page.evaluate(() => LidarPL.map.setView(52.0, 19.0, 9.4)); await settle(300);
@@ -535,7 +536,7 @@ console.log('\n[14] Szybkość ładowania: liczba zapytań, kolejność, zoom k�
   await page.selectOption('#minZoom', '10').catch(() => {});
   const w0 = log.wms.length, e0 = log.esri.length;
   await page.goto(PAGE + '#12.00/50.06470/19.94500'); await settle(1500);
-  const wms = log.wms.slice(w0).filter(relief), img = log.esri.slice(e0).filter(isImagery);
+  const wms = log.wms.slice(w0).filter((u) => relief(u) && u.searchParams.get('WIDTH') === '512'), img = log.esri.slice(e0).filter(isImagery);
   console.log(`  info  start z12: zapytań o relief = ${wms.length}, kafli podkładu (256 px) = ${img.length}`);
   check('relief pobierany większymi kafelkami (512 px) = kilka razy mniej zapytań', wms.length > 0 && wms.every((u) => u.searchParams.get('WIDTH') === '512' && u.searchParams.get('HEIGHT') === '512') && wms.length * 3 <= img.length, `${wms.length} vs ${img.length}`);
   const dW = (u) => { const b = bb(u); return Math.hypot((b[0] + b[2]) / 2 - center.x, (b[1] + b[3]) / 2 - center.y); };
@@ -553,7 +554,7 @@ console.log('\n[14] Szybkość ładowania: liczba zapytań, kolejność, zoom k�
   console.log(`  info  zoom kółkiem z13 → z9: zapytań w trakcie gestu = ${during}`);
   check('w trakcie zoomu kółkiem nie pobieramy kafli pośrednich poziomów', during === 0, `zapytań: ${during}`);
   await settle(1500);
-  const after = log.wms.slice(n0).filter(relief).map((u) => bboxToTile(u.searchParams.get('BBOX')));
+  const after = log.wms.slice(n0).filter((u) => relief(u) && u.searchParams.get('WIDTH') === '512').map((u) => bboxToTile(u.searchParams.get('BBOX')));
   const zs = new Set(after.map((t) => t.z));
   console.log(`  info  po zakończeniu gestu: zapytań = ${after.length}, poziomy = ${[...zs]}`);
   check('po zatrzymaniu pobierany jest tylko jeden (docelowy) poziom i rozsądna liczba kafli', zs.size === 1 && after.length > 0 && after.length <= 16, JSON.stringify([...zs]) + ' n=' + after.length);
@@ -571,6 +572,77 @@ console.log('\n[14] Szybkość ładowania: liczba zapytań, kolejność, zoom k�
   check('przy wolnym serwerze panel mówi to wprost', /serwer odpowiada wolno/.test(st) && /średnio [2-9],\d s/.test(st), st);
   mode.delay = 0;
   await page.selectOption('#minZoom', '10');
+}
+
+console.log('\n[15] Format JPEG i wycofanie do PNG, zgrubne podglądy');
+{
+  const relief = (u) => u.pathname.endsWith('/ShadedRelief');
+  const fine = (u) => relief(u) && u.searchParams.get('WIDTH') === '512';
+  const coarse = (u) => relief(u) && u.searchParams.get('WIDTH') === '256';
+  const layerInfo = () => ev(() => {
+    const l = LidarPL.map.layers.find((x) => x.zIndex === 2);
+    return { stats: l.stats, domOk: l.el.querySelectorAll('.tile.ok').length, zooms: [...new Set([...l.tiles.values()].map((t) => t.z))], useAlt: l.useAlt };
+  });
+
+  // --- start: tanie podglądy idą pierwsze
+  await page.goto('about:blank');
+  let n = log.wms.length;
+  await page.goto(PAGE + '#12.00/50.06470/19.94500'); await settle(1500);
+  let rq = log.wms.slice(n).filter(relief);
+  const zOf = (u) => bboxToTile(u.searchParams.get('BBOX')).z;
+  console.log(`  info  start: podglądów 256 px = ${rq.filter(coarse).length}, kafli 512 px = ${rq.filter(fine).length}`);
+  check('na starcie najpierw idą zgrubne podglądy', rq.length > 0 && coarse(rq[0]), rq.map((u) => u.searchParams.get('WIDTH')).join(','));
+  check('podglądy są tanie: 1–4 zapytania na cały widok, 2 poziomy rzadsza siatka', rq.filter(coarse).length >= 1 && rq.filter(coarse).length <= 4 && rq.filter(coarse).every((u) => zOf(u) === zOf(rq.find(fine)) - 2), rq.map((u) => zOf(u)).join(','));
+  check('relief to JPEG bez przezroczystości', rq.filter(fine).every((u) => u.searchParams.get('FORMAT') === 'image/jpeg' && u.searchParams.get('TRANSPARENT') === 'FALSE'));
+  let li = await layerInfo();
+  check('po wczytaniu szczegółów podglądy znikają (jeden poziom siatki)', li.zooms.length === 1 && li.zooms[0] === 11, JSON.stringify(li));
+  check('liczniki w panelu nie liczą podglądów', li.stats.ok === li.domOk && li.stats.err === 0, JSON.stringify(li));
+  const cov = await ev(() => { const l = LidarPL.map.layers.find((x) => x.zIndex === 2); const r = [...l.el.querySelectorAll('.tile.ok')].map((i) => i.getBoundingClientRect()); return [[700, 300], [900, 500], [500, 600], [1100, 200]].every(([x, y]) => r.some((q) => x >= q.left && x <= q.right && y >= q.top && y <= q.bottom)); });
+  check('szczegóły pokrywają widok po zniknięciu podglądów', cov);
+
+  // --- podglądy tylko wtedy, gdy nic nie jest wczytane
+  n = log.wms.length;
+  await page.mouse.move(900, 400); await page.mouse.down(); await page.mouse.move(780, 380, { steps: 6 }); await page.mouse.up(); await settle(900);
+  check('zwykłe przesunięcie nie tworzy podglądów', log.wms.slice(n).filter(coarse).length === 0);
+  n = log.wms.length;
+  await page.click('#zin'); await settle(900);
+  check('zmiana powiększenia nie tworzy podglądów (stare kafle są podkładem)', log.wms.slice(n).filter(coarse).length === 0);
+  n = log.wms.length;
+  await page.evaluate(() => LidarPL.map.setView(52.2297, 21.0122, 13)); await settle(1500);
+  rq = log.wms.slice(n).filter(relief);
+  check('skok w inne miejsce: znowu najpierw podglądy', rq.length > 0 && coarse(rq[0]), rq.map((u) => u.searchParams.get('WIDTH')).join(','));
+  li = await layerInfo();
+  check('po skoku podglądy też znikają, a liczniki się zgadzają', li.zooms.length === 1 && li.stats.ok === li.domOk, JSON.stringify(li));
+
+  // --- serwer nie obsługuje JPEG: automatyczne wycofanie do PNG
+  mode.noJpeg = true;
+  await page.goto('about:blank');
+  n = log.wms.length;
+  await page.goto(PAGE + '#12.00/51.10790/17.03850'); await settle(3000);
+  rq = log.wms.slice(n).filter(relief);
+  const fmt = (u) => u.searchParams.get('FORMAT');
+  li = await layerInfo();
+  check('JPEG odrzucony: kafle i tak się wczytały (PNG)', li.stats.ok > 0 && li.stats.err === 0 && rq.some((u) => fmt(u) === 'image/png' && u.searchParams.get('TRANSPARENT') === 'TRUE'), JSON.stringify(li));
+  check('warstwa zapamiętała zapasowy format', li.useAlt === true);
+  check('panel o tym informuje', /format PNG \(serwer nie obsłużył JPEG\)/.test(await page.textContent('#reliefStatus')), await page.textContent('#reliefStatus'));
+  n = log.wms.length;
+  await page.evaluate(() => LidarPL.map.setView(52.4064, 16.9252, 12)); await settle(2500);
+  rq = log.wms.slice(n).filter(relief);
+  check('kolejne kafle idą od razu w PNG (bez zbędnych prób JPEG)', rq.length > 0 && rq.every((u) => fmt(u) === 'image/png'), rq.map(fmt).join(','));
+  mode.noJpeg = false;
+
+  // --- ręczny przełącznik PNG
+  await page.goto('about:blank');
+  await page.goto(PAGE + '#13.00/50.06470/19.94500'); await settle(1200);
+  n = log.wms.length;
+  await page.check('#pngChk'); await settle(1500);
+  rq = log.wms.slice(n).filter(fine);
+  check('przełącznik PNG: kafle w PNG z przezroczystością', rq.length > 0 && rq.every((u) => fmt(u) === 'image/png' && u.searchParams.get('TRANSPARENT') === 'TRUE'), rq.map(fmt).join(','));
+  await page.reload(); await settle(800);
+  check('wybór PNG przetrwał odświeżenie', await page.isChecked('#pngChk'));
+  await page.uncheck('#pngChk'); await settle(800);
+  rq = log.wms.slice(-6).filter(fine);
+  check('po odznaczeniu wraca JPEG', rq.length > 0 && rq.every((u) => fmt(u) === 'image/jpeg'), rq.map(fmt).join(','));
 }
 
 check('brak błędów JS w konsoli', errors.length === 0, errors.join(' | '));
